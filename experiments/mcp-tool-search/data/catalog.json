@@ -1,0 +1,8054 @@
+[
+  {
+    "id": "github.get_me",
+    "server": "github",
+    "name": "get_me",
+    "description": "Get details of the authenticated GitHub user and their context.",
+    "params": [
+      "include_auth"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_teams",
+    "server": "github",
+    "name": "get_teams",
+    "description": "Get teams for the authenticated GitHub user.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_team_members",
+    "server": "github",
+    "name": "get_team_members",
+    "description": "List members of a GitHub team.",
+    "params": [
+      "org",
+      "team_slug"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.search_repositories",
+    "server": "github",
+    "name": "search_repositories",
+    "description": "Search GitHub repositories by name, description, or topic.",
+    "params": [
+      "query",
+      "perPage",
+      "sort"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_file_contents",
+    "server": "github",
+    "name": "get_file_contents",
+    "description": "Get file or directory contents from a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "path",
+      "ref"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_commits",
+    "server": "github",
+    "name": "list_commits",
+    "description": "List commits on a GitHub repository branch.",
+    "params": [
+      "owner",
+      "repo",
+      "sha",
+      "page"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.search_code",
+    "server": "github",
+    "name": "search_code",
+    "description": "Search code across GitHub repositories.",
+    "params": [
+      "query",
+      "perPage"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.search_commits",
+    "server": "github",
+    "name": "search_commits",
+    "description": "Search commits across GitHub.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_commit",
+    "server": "github",
+    "name": "get_commit",
+    "description": "Get a single GitHub commit by SHA.",
+    "params": [
+      "owner",
+      "repo",
+      "sha"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_file_blame",
+    "server": "github",
+    "name": "get_file_blame",
+    "description": "Get git blame for a file in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_branches",
+    "server": "github",
+    "name": "list_branches",
+    "description": "List branches in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_tags",
+    "server": "github",
+    "name": "list_tags",
+    "description": "List git tags in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_tag",
+    "server": "github",
+    "name": "get_tag",
+    "description": "Get a git tag from a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "tag"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_releases",
+    "server": "github",
+    "name": "list_releases",
+    "description": "List GitHub releases for a repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_latest_release",
+    "server": "github",
+    "name": "get_latest_release",
+    "description": "Get the latest GitHub release.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_release_by_tag",
+    "server": "github",
+    "name": "get_release_by_tag",
+    "description": "Get a GitHub release by tag name.",
+    "params": [
+      "owner",
+      "repo",
+      "tag"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_or_update_file",
+    "server": "github",
+    "name": "create_or_update_file",
+    "description": "Create or update a single file in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "path",
+      "content",
+      "message",
+      "branch"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_repository",
+    "server": "github",
+    "name": "create_repository",
+    "description": "Create a new GitHub repository.",
+    "params": [
+      "name",
+      "description",
+      "private"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_repository",
+    "server": "github",
+    "name": "delete_repository",
+    "description": "Delete a GitHub repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.fork_repository",
+    "server": "github",
+    "name": "fork_repository",
+    "description": "Fork a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "organization"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_branch",
+    "server": "github",
+    "name": "create_branch",
+    "description": "Create a branch in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "branch",
+      "from_branch"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.push_files",
+    "server": "github",
+    "name": "push_files",
+    "description": "Push multiple files to a GitHub repository in one commit.",
+    "params": [
+      "owner",
+      "repo",
+      "branch",
+      "files",
+      "message"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_file",
+    "server": "github",
+    "name": "delete_file",
+    "description": "Delete a file from a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "path",
+      "message",
+      "branch"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_starred_repositories",
+    "server": "github",
+    "name": "list_starred_repositories",
+    "description": "List repositories starred by a GitHub user.",
+    "params": [
+      "username"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.star_repository",
+    "server": "github",
+    "name": "star_repository",
+    "description": "Star a GitHub repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.unstar_repository",
+    "server": "github",
+    "name": "unstar_repository",
+    "description": "Unstar a GitHub repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_repository_collaborators",
+    "server": "github",
+    "name": "list_repository_collaborators",
+    "description": "List collaborators on a GitHub repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_repository_tree",
+    "server": "github",
+    "name": "get_repository_tree",
+    "description": "Get the git tree of a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "tree_sha",
+      "recursive"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_issue",
+    "server": "github",
+    "name": "create_issue",
+    "description": "Create an issue in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "title",
+      "body",
+      "labels",
+      "assignees"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.issue_write",
+    "server": "github",
+    "name": "issue_write",
+    "description": "Create or update a GitHub issue (consolidated write tool).",
+    "params": [
+      "method",
+      "owner",
+      "repo",
+      "title",
+      "body",
+      "issue_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.issue_read",
+    "server": "github",
+    "name": "issue_read",
+    "description": "Read a GitHub issue by number.",
+    "params": [
+      "method",
+      "owner",
+      "repo",
+      "issue_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.search_issues",
+    "server": "github",
+    "name": "search_issues",
+    "description": "Search GitHub issues.",
+    "params": [
+      "query",
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_issues",
+    "server": "github",
+    "name": "list_issues",
+    "description": "List issues in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "state",
+      "labels"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.add_issue_comment",
+    "server": "github",
+    "name": "add_issue_comment",
+    "description": "Add a comment to a GitHub issue.",
+    "params": [
+      "owner",
+      "repo",
+      "issue_number",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_issue_comment",
+    "server": "github",
+    "name": "update_issue_comment",
+    "description": "Update a comment on a GitHub issue.",
+    "params": [
+      "owner",
+      "repo",
+      "comment_id",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_pull_request",
+    "server": "github",
+    "name": "create_pull_request",
+    "description": "Open a new pull request on GitHub.",
+    "params": [
+      "owner",
+      "repo",
+      "title",
+      "head",
+      "base",
+      "body",
+      "draft"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_pull_requests",
+    "server": "github",
+    "name": "list_pull_requests",
+    "description": "List pull requests in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo",
+      "state"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.search_pull_requests",
+    "server": "github",
+    "name": "search_pull_requests",
+    "description": "Search GitHub pull requests.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.pull_request_read",
+    "server": "github",
+    "name": "pull_request_read",
+    "description": "Read a GitHub pull request by number.",
+    "params": [
+      "owner",
+      "repo",
+      "pull_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_pull_request",
+    "server": "github",
+    "name": "update_pull_request",
+    "description": "Update title, body, or state of a GitHub pull request.",
+    "params": [
+      "owner",
+      "repo",
+      "pull_number",
+      "title",
+      "body",
+      "state"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.merge_pull_request",
+    "server": "github",
+    "name": "merge_pull_request",
+    "description": "Merge a GitHub pull request.",
+    "params": [
+      "owner",
+      "repo",
+      "pull_number",
+      "merge_method"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_pull_request_branch",
+    "server": "github",
+    "name": "update_pull_request_branch",
+    "description": "Update a pull request branch with the base branch.",
+    "params": [
+      "owner",
+      "repo",
+      "pull_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.pull_request_review_write",
+    "server": "github",
+    "name": "pull_request_review_write",
+    "description": "Create or submit a GitHub pull request review.",
+    "params": [
+      "method",
+      "owner",
+      "repo",
+      "pull_number",
+      "body",
+      "event"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.add_comment_to_pending_review",
+    "server": "github",
+    "name": "add_comment_to_pending_review",
+    "description": "Add a comment to a pending GitHub pull request review.",
+    "params": [
+      "owner",
+      "repo",
+      "pull_number",
+      "path",
+      "body",
+      "line"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.assign_copilot_to_issue",
+    "server": "github",
+    "name": "assign_copilot_to_issue",
+    "description": "Assign GitHub Copilot to work on an issue.",
+    "params": [
+      "owner",
+      "repo",
+      "issue_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.request_copilot_review",
+    "server": "github",
+    "name": "request_copilot_review",
+    "description": "Request a Copilot review on a GitHub pull request.",
+    "params": [
+      "owner",
+      "repo",
+      "pull_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_code_scanning_alert",
+    "server": "github",
+    "name": "get_code_scanning_alert",
+    "description": "Get a GitHub code scanning alert.",
+    "params": [
+      "owner",
+      "repo",
+      "alert_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_code_scanning_alerts",
+    "server": "github",
+    "name": "list_code_scanning_alerts",
+    "description": "List GitHub code scanning alerts.",
+    "params": [
+      "owner",
+      "repo",
+      "state"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_secret_scanning_alert",
+    "server": "github",
+    "name": "get_secret_scanning_alert",
+    "description": "Get a GitHub secret scanning alert.",
+    "params": [
+      "owner",
+      "repo",
+      "alert_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_secret_scanning_alerts",
+    "server": "github",
+    "name": "list_secret_scanning_alerts",
+    "description": "List GitHub secret scanning alerts.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_dependabot_alert",
+    "server": "github",
+    "name": "get_dependabot_alert",
+    "description": "Get a Dependabot alert.",
+    "params": [
+      "owner",
+      "repo",
+      "alert_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_dependabot_alerts",
+    "server": "github",
+    "name": "list_dependabot_alerts",
+    "description": "List Dependabot alerts for a repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_notifications",
+    "server": "github",
+    "name": "list_notifications",
+    "description": "List GitHub notifications for the authenticated user.",
+    "params": [
+      "all",
+      "participating"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_notification_details",
+    "server": "github",
+    "name": "get_notification_details",
+    "description": "Get details of a GitHub notification thread.",
+    "params": [
+      "thread_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.dismiss_notification",
+    "server": "github",
+    "name": "dismiss_notification",
+    "description": "Dismiss or mark a GitHub notification as done.",
+    "params": [
+      "thread_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.mark_all_notifications_read",
+    "server": "github",
+    "name": "mark_all_notifications_read",
+    "description": "Mark all GitHub notifications as read.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_discussions",
+    "server": "github",
+    "name": "list_discussions",
+    "description": "List GitHub discussions in a repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_discussion",
+    "server": "github",
+    "name": "get_discussion",
+    "description": "Get a GitHub discussion.",
+    "params": [
+      "owner",
+      "repo",
+      "discussion_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_discussion_comments",
+    "server": "github",
+    "name": "get_discussion_comments",
+    "description": "Get comments on a GitHub discussion.",
+    "params": [
+      "owner",
+      "repo",
+      "discussion_number"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.actions_list",
+    "server": "github",
+    "name": "actions_list",
+    "description": "List GitHub Actions workflows.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.actions_get",
+    "server": "github",
+    "name": "actions_get",
+    "description": "Get a GitHub Actions workflow or run.",
+    "params": [
+      "owner",
+      "repo",
+      "workflow_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.actions_run_trigger",
+    "server": "github",
+    "name": "actions_run_trigger",
+    "description": "Trigger a GitHub Actions workflow dispatch.",
+    "params": [
+      "owner",
+      "repo",
+      "workflow_id",
+      "ref",
+      "inputs"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.actions_get_job_logs",
+    "server": "github",
+    "name": "actions_get_job_logs",
+    "description": "Get logs for a GitHub Actions job.",
+    "params": [
+      "owner",
+      "repo",
+      "job_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_gists",
+    "server": "github",
+    "name": "list_gists",
+    "description": "List GitHub gists for a user.",
+    "params": [
+      "username"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_gist",
+    "server": "github",
+    "name": "get_gist",
+    "description": "Get a GitHub gist by id.",
+    "params": [
+      "gist_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_gist",
+    "server": "github",
+    "name": "create_gist",
+    "description": "Create a GitHub gist.",
+    "params": [
+      "description",
+      "files",
+      "public"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_gist",
+    "server": "github",
+    "name": "update_gist",
+    "description": "Update a GitHub gist.",
+    "params": [
+      "gist_id",
+      "description",
+      "files"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.projects_list",
+    "server": "github",
+    "name": "projects_list",
+    "description": "List GitHub Projects.",
+    "params": [
+      "owner",
+      "owner_type"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.projects_get",
+    "server": "github",
+    "name": "projects_get",
+    "description": "Get a GitHub Project.",
+    "params": [
+      "project_number",
+      "owner"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.projects_write",
+    "server": "github",
+    "name": "projects_write",
+    "description": "Create or update a GitHub Project item.",
+    "params": [
+      "method",
+      "project_id",
+      "title"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_label",
+    "server": "github",
+    "name": "get_label",
+    "description": "Get a GitHub label.",
+    "params": [
+      "owner",
+      "repo",
+      "name"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_labels",
+    "server": "github",
+    "name": "list_labels",
+    "description": "List labels in a GitHub repository.",
+    "params": [
+      "owner",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.label_write",
+    "server": "github",
+    "name": "label_write",
+    "description": "Create, update, or delete a GitHub label.",
+    "params": [
+      "method",
+      "owner",
+      "repo",
+      "name",
+      "color"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.search_users",
+    "server": "github",
+    "name": "search_users",
+    "description": "Search GitHub users.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.search_orgs",
+    "server": "github",
+    "name": "search_orgs",
+    "description": "Search GitHub organizations.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "filesystem.read_file",
+    "server": "filesystem",
+    "name": "read_file",
+    "description": "Read the complete contents of a file from the local filesystem.",
+    "params": [
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.read_text_file",
+    "server": "filesystem",
+    "name": "read_text_file",
+    "description": "Read a text file from the local filesystem.",
+    "params": [
+      "path",
+      "head",
+      "tail"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.read_media_file",
+    "server": "filesystem",
+    "name": "read_media_file",
+    "description": "Read an image or audio file from the local filesystem.",
+    "params": [
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.write_file",
+    "server": "filesystem",
+    "name": "write_file",
+    "description": "Create a new file or completely overwrite an existing file.",
+    "params": [
+      "path",
+      "content"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.edit_file",
+    "server": "filesystem",
+    "name": "edit_file",
+    "description": "Make a line-based edit to a text file using old and new strings.",
+    "params": [
+      "path",
+      "old_string",
+      "new_string"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.create_directory",
+    "server": "filesystem",
+    "name": "create_directory",
+    "description": "Create a new directory or ensure a directory exists.",
+    "params": [
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.list_directory",
+    "server": "filesystem",
+    "name": "list_directory",
+    "description": "Get a detailed listing of files and directories.",
+    "params": [
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.list_directory_with_sizes",
+    "server": "filesystem",
+    "name": "list_directory_with_sizes",
+    "description": "Get a listing of files and directories with sizes.",
+    "params": [
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.directory_tree",
+    "server": "filesystem",
+    "name": "directory_tree",
+    "description": "Get a recursive tree view of files and directories.",
+    "params": [
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.move_file",
+    "server": "filesystem",
+    "name": "move_file",
+    "description": "Move or rename files and directories.",
+    "params": [
+      "source",
+      "destination"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.search_files",
+    "server": "filesystem",
+    "name": "search_files",
+    "description": "Recursively search for files matching a pattern.",
+    "params": [
+      "path",
+      "pattern"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.get_file_info",
+    "server": "filesystem",
+    "name": "get_file_info",
+    "description": "Retrieve metadata about a file or directory.",
+    "params": [
+      "path"
+    ],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "filesystem.list_allowed_directories",
+    "server": "filesystem",
+    "name": "list_allowed_directories",
+    "description": "List directories the filesystem server is allowed to access.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "filesystem",
+      "files",
+      "disk",
+      "folder",
+      "directory"
+    ]
+  },
+  {
+    "id": "memory.create_entities",
+    "server": "memory",
+    "name": "create_entities",
+    "description": "Create multiple entities in the knowledge graph.",
+    "params": [
+      "entities"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.create_relations",
+    "server": "memory",
+    "name": "create_relations",
+    "description": "Create relations between entities in the knowledge graph.",
+    "params": [
+      "relations"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.add_observations",
+    "server": "memory",
+    "name": "add_observations",
+    "description": "Add observations to existing entities in the knowledge graph.",
+    "params": [
+      "observations"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.delete_entities",
+    "server": "memory",
+    "name": "delete_entities",
+    "description": "Delete entities and their relations from the knowledge graph.",
+    "params": [
+      "entityNames"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.delete_observations",
+    "server": "memory",
+    "name": "delete_observations",
+    "description": "Delete specific observations from entities.",
+    "params": [
+      "deletions"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.delete_relations",
+    "server": "memory",
+    "name": "delete_relations",
+    "description": "Delete relations from the knowledge graph.",
+    "params": [
+      "relations"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.read_graph",
+    "server": "memory",
+    "name": "read_graph",
+    "description": "Read the entire knowledge graph.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.search_nodes",
+    "server": "memory",
+    "name": "search_nodes",
+    "description": "Search for nodes in the knowledge graph based on a query.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "memory.open_nodes",
+    "server": "memory",
+    "name": "open_nodes",
+    "description": "Open specific nodes in the knowledge graph by name.",
+    "params": [
+      "names"
+    ],
+    "source": "public",
+    "aliases": [
+      "memory",
+      "knowledge graph",
+      "remember"
+    ]
+  },
+  {
+    "id": "postgres.query",
+    "server": "postgres",
+    "name": "query",
+    "description": "Run a read-only SQL query against PostgreSQL.",
+    "params": [
+      "sql"
+    ],
+    "source": "public",
+    "aliases": [
+      "postgres",
+      "postgresql",
+      "sql",
+      "database"
+    ]
+  },
+  {
+    "id": "postgres.list_tables",
+    "server": "postgres",
+    "name": "list_tables",
+    "description": "List tables in the connected PostgreSQL database.",
+    "params": [
+      "schema"
+    ],
+    "source": "public",
+    "aliases": [
+      "postgres",
+      "postgresql",
+      "sql",
+      "database"
+    ]
+  },
+  {
+    "id": "postgres.describe_table",
+    "server": "postgres",
+    "name": "describe_table",
+    "description": "Describe columns and types of a PostgreSQL table.",
+    "params": [
+      "schema",
+      "table"
+    ],
+    "source": "public",
+    "aliases": [
+      "postgres",
+      "postgresql",
+      "sql",
+      "database"
+    ]
+  },
+  {
+    "id": "postgres.list_schemas",
+    "server": "postgres",
+    "name": "list_schemas",
+    "description": "List schemas in the PostgreSQL database.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "postgres",
+      "postgresql",
+      "sql",
+      "database"
+    ]
+  },
+  {
+    "id": "postgres.explain_query",
+    "server": "postgres",
+    "name": "explain_query",
+    "description": "EXPLAIN a PostgreSQL query plan.",
+    "params": [
+      "sql"
+    ],
+    "source": "public",
+    "aliases": [
+      "postgres",
+      "postgresql",
+      "sql",
+      "database"
+    ]
+  },
+  {
+    "id": "fetch.fetch",
+    "server": "fetch",
+    "name": "fetch",
+    "description": "Fetch a URL and return the contents as markdown or HTML.",
+    "params": [
+      "url",
+      "max_length",
+      "raw"
+    ],
+    "source": "public",
+    "aliases": [
+      "fetch",
+      "http",
+      "url",
+      "webpage"
+    ]
+  },
+  {
+    "id": "git.git_status",
+    "server": "git",
+    "name": "git_status",
+    "description": "Show the working tree status of a git repository.",
+    "params": [
+      "repo_path"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_diff_unstaged",
+    "server": "git",
+    "name": "git_diff_unstaged",
+    "description": "Show unstaged git differences.",
+    "params": [
+      "repo_path"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_diff_staged",
+    "server": "git",
+    "name": "git_diff_staged",
+    "description": "Show staged git differences.",
+    "params": [
+      "repo_path"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_diff",
+    "server": "git",
+    "name": "git_diff",
+    "description": "Show git diff between branches or commits.",
+    "params": [
+      "repo_path",
+      "target"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_commit",
+    "server": "git",
+    "name": "git_commit",
+    "description": "Record staged changes to the git repository.",
+    "params": [
+      "repo_path",
+      "message"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_add",
+    "server": "git",
+    "name": "git_add",
+    "description": "Add file contents to the git staging area.",
+    "params": [
+      "repo_path",
+      "files"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_reset",
+    "server": "git",
+    "name": "git_reset",
+    "description": "Unstage all staged changes.",
+    "params": [
+      "repo_path"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_log",
+    "server": "git",
+    "name": "git_log",
+    "description": "Show commit logs.",
+    "params": [
+      "repo_path",
+      "max_count"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_create_branch",
+    "server": "git",
+    "name": "git_create_branch",
+    "description": "Create a new git branch.",
+    "params": [
+      "repo_path",
+      "branch_name",
+      "base_branch"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_checkout",
+    "server": "git",
+    "name": "git_checkout",
+    "description": "Switch git branches.",
+    "params": [
+      "repo_path",
+      "branch_name"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_show",
+    "server": "git",
+    "name": "git_show",
+    "description": "Show a git commit.",
+    "params": [
+      "repo_path",
+      "revision"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "git.git_branch",
+    "server": "git",
+    "name": "git_branch",
+    "description": "List git branches.",
+    "params": [
+      "repo_path"
+    ],
+    "source": "public",
+    "aliases": [
+      "git"
+    ]
+  },
+  {
+    "id": "sequential_thinking.sequentialthinking",
+    "server": "sequential_thinking",
+    "name": "sequentialthinking",
+    "description": "A detailed tool for dynamic and reflective problem-solving through thoughts.",
+    "params": [
+      "thought",
+      "nextThoughtNeeded",
+      "thoughtNumber",
+      "totalThoughts"
+    ],
+    "source": "public",
+    "aliases": [
+      "sequential thinking",
+      "think step"
+    ]
+  },
+  {
+    "id": "time.get_current_time",
+    "server": "time",
+    "name": "get_current_time",
+    "description": "Get the current time in a timezone.",
+    "params": [
+      "timezone"
+    ],
+    "source": "public",
+    "aliases": [
+      "time",
+      "timezone",
+      "clock"
+    ]
+  },
+  {
+    "id": "time.convert_time",
+    "server": "time",
+    "name": "convert_time",
+    "description": "Convert time between timezones.",
+    "params": [
+      "source_timezone",
+      "time",
+      "target_timezone"
+    ],
+    "source": "public",
+    "aliases": [
+      "time",
+      "timezone",
+      "clock"
+    ]
+  },
+  {
+    "id": "brave_search.brave_web_search",
+    "server": "brave_search",
+    "name": "brave_web_search",
+    "description": "Search the web using Brave Search.",
+    "params": [
+      "query",
+      "count",
+      "offset"
+    ],
+    "source": "public",
+    "aliases": [
+      "brave",
+      "web search"
+    ]
+  },
+  {
+    "id": "brave_search.brave_local_search",
+    "server": "brave_search",
+    "name": "brave_local_search",
+    "description": "Search for local businesses and places using Brave.",
+    "params": [
+      "query",
+      "count"
+    ],
+    "source": "public",
+    "aliases": [
+      "brave",
+      "web search"
+    ]
+  },
+  {
+    "id": "slack.slack_post_message",
+    "server": "slack",
+    "name": "slack_post_message",
+    "description": "Post a message to a Slack channel.",
+    "params": [
+      "channel_id",
+      "text"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_reply_to_thread",
+    "server": "slack",
+    "name": "slack_reply_to_thread",
+    "description": "Reply to a Slack thread.",
+    "params": [
+      "channel_id",
+      "thread_ts",
+      "text"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_add_reaction",
+    "server": "slack",
+    "name": "slack_add_reaction",
+    "description": "Add an emoji reaction to a Slack message.",
+    "params": [
+      "channel_id",
+      "timestamp",
+      "emoji"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_get_channel_history",
+    "server": "slack",
+    "name": "slack_get_channel_history",
+    "description": "Get recent messages from a Slack channel.",
+    "params": [
+      "channel_id",
+      "limit"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_get_thread_replies",
+    "server": "slack",
+    "name": "slack_get_thread_replies",
+    "description": "Get replies in a Slack thread.",
+    "params": [
+      "channel_id",
+      "thread_ts"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_list_channels",
+    "server": "slack",
+    "name": "slack_list_channels",
+    "description": "List Slack channels in the workspace.",
+    "params": [
+      "limit",
+      "cursor"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_get_users",
+    "server": "slack",
+    "name": "slack_get_users",
+    "description": "Get a list of Slack users.",
+    "params": [
+      "cursor",
+      "limit"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_get_user_profile",
+    "server": "slack",
+    "name": "slack_get_user_profile",
+    "description": "Get a Slack user's profile.",
+    "params": [
+      "user_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_join_channel",
+    "server": "slack",
+    "name": "slack_join_channel",
+    "description": "Join a Slack channel.",
+    "params": [
+      "channel_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_leave_channel",
+    "server": "slack",
+    "name": "slack_leave_channel",
+    "description": "Leave a Slack channel.",
+    "params": [
+      "channel_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_create_channel",
+    "server": "slack",
+    "name": "slack_create_channel",
+    "description": "Create a Slack channel.",
+    "params": [
+      "name",
+      "is_private"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_set_channel_topic",
+    "server": "slack",
+    "name": "slack_set_channel_topic",
+    "description": "Set the topic of a Slack channel.",
+    "params": [
+      "channel_id",
+      "topic"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_upload_file",
+    "server": "slack",
+    "name": "slack_upload_file",
+    "description": "Upload a file to Slack.",
+    "params": [
+      "channel_id",
+      "filename",
+      "content"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_search_messages",
+    "server": "slack",
+    "name": "slack_search_messages",
+    "description": "Search Slack messages.",
+    "params": [
+      "query",
+      "count"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.slack_list_users",
+    "server": "slack",
+    "name": "slack_list_users",
+    "description": "List Slack workspace users.",
+    "params": [
+      "limit",
+      "cursor"
+    ],
+    "source": "public",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "linear.linear_create_issue",
+    "server": "linear",
+    "name": "linear_create_issue",
+    "description": "Create a Linear issue in a team.",
+    "params": [
+      "title",
+      "description",
+      "team",
+      "teamId",
+      "priority",
+      "labels"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_update_issue",
+    "server": "linear",
+    "name": "linear_update_issue",
+    "description": "Update a Linear issue.",
+    "params": [
+      "id",
+      "title",
+      "description",
+      "state",
+      "priority"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_list_issues",
+    "server": "linear",
+    "name": "linear_list_issues",
+    "description": "List Linear issues, optionally filtered.",
+    "params": [
+      "team",
+      "state",
+      "assignee"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_get_issue",
+    "server": "linear",
+    "name": "linear_get_issue",
+    "description": "Get a Linear issue by id or identifier.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_search_issues",
+    "server": "linear",
+    "name": "linear_search_issues",
+    "description": "Search Linear issues by text.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_create_comment",
+    "server": "linear",
+    "name": "linear_create_comment",
+    "description": "Add a comment to a Linear issue.",
+    "params": [
+      "issueId",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_list_teams",
+    "server": "linear",
+    "name": "linear_list_teams",
+    "description": "List Linear teams.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_list_projects",
+    "server": "linear",
+    "name": "linear_list_projects",
+    "description": "List Linear projects.",
+    "params": [
+      "team"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_create_project",
+    "server": "linear",
+    "name": "linear_create_project",
+    "description": "Create a Linear project.",
+    "params": [
+      "name",
+      "team",
+      "description"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.linear_assign_issue",
+    "server": "linear",
+    "name": "linear_assign_issue",
+    "description": "Assign a Linear issue to a user.",
+    "params": [
+      "id",
+      "assigneeId"
+    ],
+    "source": "public",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "jira.jira_create_issue",
+    "server": "jira",
+    "name": "jira_create_issue",
+    "description": "Create a Jira issue or ticket in a project.",
+    "params": [
+      "project",
+      "key",
+      "summary",
+      "description",
+      "issuetype"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_update_issue",
+    "server": "jira",
+    "name": "jira_update_issue",
+    "description": "Update an existing Jira issue.",
+    "params": [
+      "issue_key",
+      "fields"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_get_issue",
+    "server": "jira",
+    "name": "jira_get_issue",
+    "description": "Get a Jira issue by key.",
+    "params": [
+      "issue_key"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_search_issues",
+    "server": "jira",
+    "name": "jira_search_issues",
+    "description": "Search Jira issues with JQL.",
+    "params": [
+      "jql",
+      "maxResults"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_add_comment",
+    "server": "jira",
+    "name": "jira_add_comment",
+    "description": "Add a comment to a Jira issue.",
+    "params": [
+      "issue_key",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_transition_issue",
+    "server": "jira",
+    "name": "jira_transition_issue",
+    "description": "Transition a Jira issue to a new status.",
+    "params": [
+      "issue_key",
+      "transition"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_assign_issue",
+    "server": "jira",
+    "name": "jira_assign_issue",
+    "description": "Assign a Jira issue.",
+    "params": [
+      "issue_key",
+      "account_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_list_projects",
+    "server": "jira",
+    "name": "jira_list_projects",
+    "description": "List Jira projects.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_create_sprint",
+    "server": "jira",
+    "name": "jira_create_sprint",
+    "description": "Create a Jira Software sprint.",
+    "params": [
+      "board_id",
+      "name",
+      "startDate",
+      "endDate"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.jira_add_worklog",
+    "server": "jira",
+    "name": "jira_add_worklog",
+    "description": "Add a worklog to a Jira issue.",
+    "params": [
+      "issue_key",
+      "timeSpent",
+      "comment"
+    ],
+    "source": "public",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "notion.notion_search",
+    "server": "notion",
+    "name": "notion_search",
+    "description": "Search Notion pages and databases.",
+    "params": [
+      "query",
+      "filter"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_get_page",
+    "server": "notion",
+    "name": "notion_get_page",
+    "description": "Retrieve a Notion page.",
+    "params": [
+      "page_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_create_page",
+    "server": "notion",
+    "name": "notion_create_page",
+    "description": "Create a Notion page in a parent page or database.",
+    "params": [
+      "parent",
+      "properties",
+      "children"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_update_page",
+    "server": "notion",
+    "name": "notion_update_page",
+    "description": "Update a Notion page properties.",
+    "params": [
+      "page_id",
+      "properties"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_get_block",
+    "server": "notion",
+    "name": "notion_get_block",
+    "description": "Get a Notion block.",
+    "params": [
+      "block_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_append_block",
+    "server": "notion",
+    "name": "notion_append_block",
+    "description": "Append children blocks to a Notion block.",
+    "params": [
+      "block_id",
+      "children"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_query_database",
+    "server": "notion",
+    "name": "notion_query_database",
+    "description": "Query a Notion database.",
+    "params": [
+      "database_id",
+      "filter",
+      "sorts"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_create_database",
+    "server": "notion",
+    "name": "notion_create_database",
+    "description": "Create a Notion database.",
+    "params": [
+      "parent",
+      "title",
+      "properties"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_list_users",
+    "server": "notion",
+    "name": "notion_list_users",
+    "description": "List Notion workspace users.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.notion_get_comments",
+    "server": "notion",
+    "name": "notion_get_comments",
+    "description": "Get comments on a Notion page.",
+    "params": [
+      "block_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "playwright.browser_navigate",
+    "server": "playwright",
+    "name": "browser_navigate",
+    "description": "Navigate the browser to a URL.",
+    "params": [
+      "url"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_snapshot",
+    "server": "playwright",
+    "name": "browser_snapshot",
+    "description": "Capture an accessibility snapshot of the current page.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_click",
+    "server": "playwright",
+    "name": "browser_click",
+    "description": "Click an element on the page.",
+    "params": [
+      "element",
+      "ref"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_type",
+    "server": "playwright",
+    "name": "browser_type",
+    "description": "Type text into an editable element.",
+    "params": [
+      "element",
+      "ref",
+      "text"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_fill_form",
+    "server": "playwright",
+    "name": "browser_fill_form",
+    "description": "Fill multiple form fields.",
+    "params": [
+      "fields"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_take_screenshot",
+    "server": "playwright",
+    "name": "browser_take_screenshot",
+    "description": "Take a screenshot of the page or an element.",
+    "params": [
+      "filename",
+      "fullPage"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_evaluate",
+    "server": "playwright",
+    "name": "browser_evaluate",
+    "description": "Evaluate JavaScript on the page.",
+    "params": [
+      "function"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_tab_list",
+    "server": "playwright",
+    "name": "browser_tab_list",
+    "description": "List open browser tabs.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_tab_new",
+    "server": "playwright",
+    "name": "browser_tab_new",
+    "description": "Open a new browser tab.",
+    "params": [
+      "url"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_tab_close",
+    "server": "playwright",
+    "name": "browser_tab_close",
+    "description": "Close a browser tab.",
+    "params": [
+      "index"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_wait_for",
+    "server": "playwright",
+    "name": "browser_wait_for",
+    "description": "Wait for text or time to pass.",
+    "params": [
+      "text",
+      "time"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "playwright.browser_press_key",
+    "server": "playwright",
+    "name": "browser_press_key",
+    "description": "Press a key on the page.",
+    "params": [
+      "key"
+    ],
+    "source": "public",
+    "aliases": [
+      "playwright",
+      "browser"
+    ]
+  },
+  {
+    "id": "puppeteer.puppeteer_navigate",
+    "server": "puppeteer",
+    "name": "puppeteer_navigate",
+    "description": "Navigate to a URL with Puppeteer.",
+    "params": [
+      "url"
+    ],
+    "source": "public",
+    "aliases": [
+      "puppeteer"
+    ]
+  },
+  {
+    "id": "puppeteer.puppeteer_screenshot",
+    "server": "puppeteer",
+    "name": "puppeteer_screenshot",
+    "description": "Take a screenshot with Puppeteer.",
+    "params": [
+      "name",
+      "selector"
+    ],
+    "source": "public",
+    "aliases": [
+      "puppeteer"
+    ]
+  },
+  {
+    "id": "puppeteer.puppeteer_click",
+    "server": "puppeteer",
+    "name": "puppeteer_click",
+    "description": "Click an element with Puppeteer.",
+    "params": [
+      "selector"
+    ],
+    "source": "public",
+    "aliases": [
+      "puppeteer"
+    ]
+  },
+  {
+    "id": "puppeteer.puppeteer_fill",
+    "server": "puppeteer",
+    "name": "puppeteer_fill",
+    "description": "Fill an input with Puppeteer.",
+    "params": [
+      "selector",
+      "value"
+    ],
+    "source": "public",
+    "aliases": [
+      "puppeteer"
+    ]
+  },
+  {
+    "id": "puppeteer.puppeteer_evaluate",
+    "server": "puppeteer",
+    "name": "puppeteer_evaluate",
+    "description": "Execute JavaScript with Puppeteer.",
+    "params": [
+      "script"
+    ],
+    "source": "public",
+    "aliases": [
+      "puppeteer"
+    ]
+  },
+  {
+    "id": "docker.docker_ps",
+    "server": "docker",
+    "name": "docker_ps",
+    "description": "List running Docker containers.",
+    "params": [
+      "all"
+    ],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "docker.docker_logs",
+    "server": "docker",
+    "name": "docker_logs",
+    "description": "Fetch logs from a Docker container.",
+    "params": [
+      "container",
+      "tail"
+    ],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "docker.docker_run",
+    "server": "docker",
+    "name": "docker_run",
+    "description": "Run a Docker container.",
+    "params": [
+      "image",
+      "name",
+      "ports",
+      "env"
+    ],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "docker.docker_stop",
+    "server": "docker",
+    "name": "docker_stop",
+    "description": "Stop a Docker container.",
+    "params": [
+      "container"
+    ],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "docker.docker_rm",
+    "server": "docker",
+    "name": "docker_rm",
+    "description": "Remove a Docker container.",
+    "params": [
+      "container",
+      "force"
+    ],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "docker.docker_images",
+    "server": "docker",
+    "name": "docker_images",
+    "description": "List Docker images.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "docker.docker_build",
+    "server": "docker",
+    "name": "docker_build",
+    "description": "Build a Docker image.",
+    "params": [
+      "path",
+      "tag"
+    ],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "docker.docker_exec",
+    "server": "docker",
+    "name": "docker_exec",
+    "description": "Run a command in a running Docker container.",
+    "params": [
+      "container",
+      "command"
+    ],
+    "source": "public",
+    "aliases": [
+      "docker",
+      "container"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_list_pods",
+    "server": "kubernetes",
+    "name": "k8s_list_pods",
+    "description": "List Kubernetes pods in a namespace.",
+    "params": [
+      "namespace"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_get_pod",
+    "server": "kubernetes",
+    "name": "k8s_get_pod",
+    "description": "Get a Kubernetes pod.",
+    "params": [
+      "namespace",
+      "name"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_pod_logs",
+    "server": "kubernetes",
+    "name": "k8s_pod_logs",
+    "description": "Get logs from a Kubernetes pod.",
+    "params": [
+      "namespace",
+      "name",
+      "container"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_apply",
+    "server": "kubernetes",
+    "name": "k8s_apply",
+    "description": "Apply a Kubernetes manifest.",
+    "params": [
+      "manifest",
+      "namespace"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_delete",
+    "server": "kubernetes",
+    "name": "k8s_delete",
+    "description": "Delete a Kubernetes resource.",
+    "params": [
+      "kind",
+      "name",
+      "namespace"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_list_deployments",
+    "server": "kubernetes",
+    "name": "k8s_list_deployments",
+    "description": "List Kubernetes deployments.",
+    "params": [
+      "namespace"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_scale_deployment",
+    "server": "kubernetes",
+    "name": "k8s_scale_deployment",
+    "description": "Scale a Kubernetes deployment.",
+    "params": [
+      "namespace",
+      "name",
+      "replicas"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_list_services",
+    "server": "kubernetes",
+    "name": "k8s_list_services",
+    "description": "List Kubernetes services.",
+    "params": [
+      "namespace"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "kubernetes.k8s_get_events",
+    "server": "kubernetes",
+    "name": "k8s_get_events",
+    "description": "List Kubernetes events.",
+    "params": [
+      "namespace"
+    ],
+    "source": "public",
+    "aliases": [
+      "kubernetes",
+      "k8s"
+    ]
+  },
+  {
+    "id": "stripe.stripe_create_customer",
+    "server": "stripe",
+    "name": "stripe_create_customer",
+    "description": "Create a Stripe customer.",
+    "params": [
+      "email",
+      "name"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_get_customer",
+    "server": "stripe",
+    "name": "stripe_get_customer",
+    "description": "Retrieve a Stripe customer.",
+    "params": [
+      "customer_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_list_customers",
+    "server": "stripe",
+    "name": "stripe_list_customers",
+    "description": "List Stripe customers.",
+    "params": [
+      "email",
+      "limit"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_create_payment_intent",
+    "server": "stripe",
+    "name": "stripe_create_payment_intent",
+    "description": "Create a Stripe PaymentIntent.",
+    "params": [
+      "amount",
+      "currency",
+      "customer"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_get_payment_intent",
+    "server": "stripe",
+    "name": "stripe_get_payment_intent",
+    "description": "Retrieve a Stripe PaymentIntent.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_create_invoice",
+    "server": "stripe",
+    "name": "stripe_create_invoice",
+    "description": "Create a Stripe invoice.",
+    "params": [
+      "customer"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_list_invoices",
+    "server": "stripe",
+    "name": "stripe_list_invoices",
+    "description": "List Stripe invoices.",
+    "params": [
+      "customer"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_create_product",
+    "server": "stripe",
+    "name": "stripe_create_product",
+    "description": "Create a Stripe product.",
+    "params": [
+      "name",
+      "description"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_create_price",
+    "server": "stripe",
+    "name": "stripe_create_price",
+    "description": "Create a Stripe price.",
+    "params": [
+      "product",
+      "unit_amount",
+      "currency"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_list_subscriptions",
+    "server": "stripe",
+    "name": "stripe_list_subscriptions",
+    "description": "List Stripe subscriptions.",
+    "params": [
+      "customer",
+      "status"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_cancel_subscription",
+    "server": "stripe",
+    "name": "stripe_cancel_subscription",
+    "description": "Cancel a Stripe subscription.",
+    "params": [
+      "subscription_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "stripe.stripe_create_refund",
+    "server": "stripe",
+    "name": "stripe_create_refund",
+    "description": "Create a Stripe refund.",
+    "params": [
+      "payment_intent",
+      "amount"
+    ],
+    "source": "public",
+    "aliases": [
+      "stripe"
+    ]
+  },
+  {
+    "id": "shopify.shopify_list_products",
+    "server": "shopify",
+    "name": "shopify_list_products",
+    "description": "List Shopify products.",
+    "params": [
+      "limit",
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "shopify.shopify_get_product",
+    "server": "shopify",
+    "name": "shopify_get_product",
+    "description": "Get a Shopify product.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "shopify.shopify_create_product",
+    "server": "shopify",
+    "name": "shopify_create_product",
+    "description": "Create a Shopify product.",
+    "params": [
+      "title",
+      "body_html",
+      "vendor"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "shopify.shopify_update_product",
+    "server": "shopify",
+    "name": "shopify_update_product",
+    "description": "Update a Shopify product.",
+    "params": [
+      "id",
+      "title"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "shopify.shopify_list_orders",
+    "server": "shopify",
+    "name": "shopify_list_orders",
+    "description": "List Shopify orders.",
+    "params": [
+      "status",
+      "limit"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "shopify.shopify_get_order",
+    "server": "shopify",
+    "name": "shopify_get_order",
+    "description": "Get a Shopify order.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "shopify.shopify_create_order",
+    "server": "shopify",
+    "name": "shopify_create_order",
+    "description": "Create a Shopify order.",
+    "params": [
+      "line_items",
+      "email"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "shopify.shopify_list_customers",
+    "server": "shopify",
+    "name": "shopify_list_customers",
+    "description": "List Shopify customers.",
+    "params": [
+      "limit"
+    ],
+    "source": "public",
+    "aliases": [
+      "shopify"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_query",
+    "server": "salesforce",
+    "name": "salesforce_query",
+    "description": "Run a SOQL query against Salesforce.",
+    "params": [
+      "soql"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_create_record",
+    "server": "salesforce",
+    "name": "salesforce_create_record",
+    "description": "Create a Salesforce record.",
+    "params": [
+      "sobject",
+      "fields"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_update_record",
+    "server": "salesforce",
+    "name": "salesforce_update_record",
+    "description": "Update a Salesforce record.",
+    "params": [
+      "sobject",
+      "id",
+      "fields"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_get_record",
+    "server": "salesforce",
+    "name": "salesforce_get_record",
+    "description": "Get a Salesforce record by id.",
+    "params": [
+      "sobject",
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_delete_record",
+    "server": "salesforce",
+    "name": "salesforce_delete_record",
+    "description": "Delete a Salesforce record.",
+    "params": [
+      "sobject",
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_list_opportunities",
+    "server": "salesforce",
+    "name": "salesforce_list_opportunities",
+    "description": "List Salesforce opportunities.",
+    "params": [
+      "stage"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_create_lead",
+    "server": "salesforce",
+    "name": "salesforce_create_lead",
+    "description": "Create a Salesforce lead.",
+    "params": [
+      "firstName",
+      "lastName",
+      "company",
+      "email"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "salesforce.salesforce_convert_lead",
+    "server": "salesforce",
+    "name": "salesforce_convert_lead",
+    "description": "Convert a Salesforce lead.",
+    "params": [
+      "leadId"
+    ],
+    "source": "public",
+    "aliases": [
+      "salesforce",
+      "sfdc"
+    ]
+  },
+  {
+    "id": "sentry.sentry_list_issues",
+    "server": "sentry",
+    "name": "sentry_list_issues",
+    "description": "List Sentry issues for a project.",
+    "params": [
+      "organization",
+      "project",
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "sentry"
+    ]
+  },
+  {
+    "id": "sentry.sentry_get_issue",
+    "server": "sentry",
+    "name": "sentry_get_issue",
+    "description": "Get a Sentry issue.",
+    "params": [
+      "organization",
+      "issue_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "sentry"
+    ]
+  },
+  {
+    "id": "sentry.sentry_list_events",
+    "server": "sentry",
+    "name": "sentry_list_events",
+    "description": "List events for a Sentry issue.",
+    "params": [
+      "organization",
+      "issue_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "sentry"
+    ]
+  },
+  {
+    "id": "sentry.sentry_update_issue",
+    "server": "sentry",
+    "name": "sentry_update_issue",
+    "description": "Update status of a Sentry issue.",
+    "params": [
+      "organization",
+      "issue_id",
+      "status"
+    ],
+    "source": "public",
+    "aliases": [
+      "sentry"
+    ]
+  },
+  {
+    "id": "sentry.sentry_list_projects",
+    "server": "sentry",
+    "name": "sentry_list_projects",
+    "description": "List Sentry projects.",
+    "params": [
+      "organization"
+    ],
+    "source": "public",
+    "aliases": [
+      "sentry"
+    ]
+  },
+  {
+    "id": "datadog.datadog_query_metrics",
+    "server": "datadog",
+    "name": "datadog_query_metrics",
+    "description": "Query Datadog timeseries metrics.",
+    "params": [
+      "query",
+      "from_ts",
+      "to_ts"
+    ],
+    "source": "public",
+    "aliases": [
+      "datadog"
+    ]
+  },
+  {
+    "id": "datadog.datadog_list_monitors",
+    "server": "datadog",
+    "name": "datadog_list_monitors",
+    "description": "List Datadog monitors.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "datadog"
+    ]
+  },
+  {
+    "id": "datadog.datadog_get_monitor",
+    "server": "datadog",
+    "name": "datadog_get_monitor",
+    "description": "Get a Datadog monitor.",
+    "params": [
+      "monitor_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "datadog"
+    ]
+  },
+  {
+    "id": "datadog.datadog_create_monitor",
+    "server": "datadog",
+    "name": "datadog_create_monitor",
+    "description": "Create a Datadog monitor.",
+    "params": [
+      "name",
+      "type",
+      "query",
+      "message"
+    ],
+    "source": "public",
+    "aliases": [
+      "datadog"
+    ]
+  },
+  {
+    "id": "datadog.datadog_list_logs",
+    "server": "datadog",
+    "name": "datadog_list_logs",
+    "description": "Search Datadog logs.",
+    "params": [
+      "query",
+      "from_ts",
+      "to_ts"
+    ],
+    "source": "public",
+    "aliases": [
+      "datadog"
+    ]
+  },
+  {
+    "id": "pagerduty.pagerduty_list_incidents",
+    "server": "pagerduty",
+    "name": "pagerduty_list_incidents",
+    "description": "List PagerDuty incidents.",
+    "params": [
+      "status",
+      "urgency"
+    ],
+    "source": "public",
+    "aliases": [
+      "pagerduty",
+      "pager duty"
+    ]
+  },
+  {
+    "id": "pagerduty.pagerduty_get_incident",
+    "server": "pagerduty",
+    "name": "pagerduty_get_incident",
+    "description": "Get a PagerDuty incident.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "pagerduty",
+      "pager duty"
+    ]
+  },
+  {
+    "id": "pagerduty.pagerduty_create_incident",
+    "server": "pagerduty",
+    "name": "pagerduty_create_incident",
+    "description": "Create a PagerDuty incident.",
+    "params": [
+      "title",
+      "service_id",
+      "urgency"
+    ],
+    "source": "public",
+    "aliases": [
+      "pagerduty",
+      "pager duty"
+    ]
+  },
+  {
+    "id": "pagerduty.pagerduty_acknowledge_incident",
+    "server": "pagerduty",
+    "name": "pagerduty_acknowledge_incident",
+    "description": "Acknowledge a PagerDuty incident.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "pagerduty",
+      "pager duty"
+    ]
+  },
+  {
+    "id": "pagerduty.pagerduty_resolve_incident",
+    "server": "pagerduty",
+    "name": "pagerduty_resolve_incident",
+    "description": "Resolve a PagerDuty incident.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "pagerduty",
+      "pager duty"
+    ]
+  },
+  {
+    "id": "pagerduty.pagerduty_list_oncalls",
+    "server": "pagerduty",
+    "name": "pagerduty_list_oncalls",
+    "description": "List PagerDuty on-call users.",
+    "params": [
+      "schedule_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "pagerduty",
+      "pager duty"
+    ]
+  },
+  {
+    "id": "gmail.gmail_send_email",
+    "server": "gmail",
+    "name": "gmail_send_email",
+    "description": "Send an email via Gmail.",
+    "params": [
+      "to",
+      "subject",
+      "body",
+      "cc"
+    ],
+    "source": "public",
+    "aliases": [
+      "gmail",
+      "email",
+      "mail"
+    ]
+  },
+  {
+    "id": "gmail.gmail_search_emails",
+    "server": "gmail",
+    "name": "gmail_search_emails",
+    "description": "Search Gmail messages.",
+    "params": [
+      "query",
+      "maxResults"
+    ],
+    "source": "public",
+    "aliases": [
+      "gmail",
+      "email",
+      "mail"
+    ]
+  },
+  {
+    "id": "gmail.gmail_get_email",
+    "server": "gmail",
+    "name": "gmail_get_email",
+    "description": "Get a Gmail message by id.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "gmail",
+      "email",
+      "mail"
+    ]
+  },
+  {
+    "id": "gmail.gmail_create_draft",
+    "server": "gmail",
+    "name": "gmail_create_draft",
+    "description": "Create a Gmail draft.",
+    "params": [
+      "to",
+      "subject",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "gmail",
+      "email",
+      "mail"
+    ]
+  },
+  {
+    "id": "gmail.gmail_list_labels",
+    "server": "gmail",
+    "name": "gmail_list_labels",
+    "description": "List Gmail labels.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "gmail",
+      "email",
+      "mail"
+    ]
+  },
+  {
+    "id": "gmail.gmail_modify_email",
+    "server": "gmail",
+    "name": "gmail_modify_email",
+    "description": "Add or remove Gmail labels on a message.",
+    "params": [
+      "id",
+      "addLabelIds",
+      "removeLabelIds"
+    ],
+    "source": "public",
+    "aliases": [
+      "gmail",
+      "email",
+      "mail"
+    ]
+  },
+  {
+    "id": "gmail.gmail_trash_email",
+    "server": "gmail",
+    "name": "gmail_trash_email",
+    "description": "Move a Gmail message to trash.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "gmail",
+      "email",
+      "mail"
+    ]
+  },
+  {
+    "id": "google_drive.gdrive_search",
+    "server": "google_drive",
+    "name": "gdrive_search",
+    "description": "Search files in Google Drive.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "google drive",
+      "gdrive",
+      "drive"
+    ]
+  },
+  {
+    "id": "google_drive.gdrive_get_file",
+    "server": "google_drive",
+    "name": "gdrive_get_file",
+    "description": "Get Google Drive file metadata or content.",
+    "params": [
+      "file_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "google drive",
+      "gdrive",
+      "drive"
+    ]
+  },
+  {
+    "id": "google_drive.gdrive_create_file",
+    "server": "google_drive",
+    "name": "gdrive_create_file",
+    "description": "Create a file in Google Drive.",
+    "params": [
+      "name",
+      "mimeType",
+      "content",
+      "parent"
+    ],
+    "source": "public",
+    "aliases": [
+      "google drive",
+      "gdrive",
+      "drive"
+    ]
+  },
+  {
+    "id": "google_drive.gdrive_update_file",
+    "server": "google_drive",
+    "name": "gdrive_update_file",
+    "description": "Update a Google Drive file.",
+    "params": [
+      "file_id",
+      "content",
+      "name"
+    ],
+    "source": "public",
+    "aliases": [
+      "google drive",
+      "gdrive",
+      "drive"
+    ]
+  },
+  {
+    "id": "google_drive.gdrive_list_folder",
+    "server": "google_drive",
+    "name": "gdrive_list_folder",
+    "description": "List files in a Google Drive folder.",
+    "params": [
+      "folder_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "google drive",
+      "gdrive",
+      "drive"
+    ]
+  },
+  {
+    "id": "google_drive.gdrive_share_file",
+    "server": "google_drive",
+    "name": "gdrive_share_file",
+    "description": "Share a Google Drive file.",
+    "params": [
+      "file_id",
+      "email",
+      "role"
+    ],
+    "source": "public",
+    "aliases": [
+      "google drive",
+      "gdrive",
+      "drive"
+    ]
+  },
+  {
+    "id": "google_calendar.gcal_list_events",
+    "server": "google_calendar",
+    "name": "gcal_list_events",
+    "description": "List Google Calendar events.",
+    "params": [
+      "calendar_id",
+      "timeMin",
+      "timeMax"
+    ],
+    "source": "public",
+    "aliases": [
+      "google calendar",
+      "gcal",
+      "calendar"
+    ]
+  },
+  {
+    "id": "google_calendar.gcal_create_event",
+    "server": "google_calendar",
+    "name": "gcal_create_event",
+    "description": "Create a Google Calendar event.",
+    "params": [
+      "calendar_id",
+      "summary",
+      "start",
+      "end",
+      "attendees"
+    ],
+    "source": "public",
+    "aliases": [
+      "google calendar",
+      "gcal",
+      "calendar"
+    ]
+  },
+  {
+    "id": "google_calendar.gcal_update_event",
+    "server": "google_calendar",
+    "name": "gcal_update_event",
+    "description": "Update a Google Calendar event.",
+    "params": [
+      "calendar_id",
+      "event_id",
+      "summary"
+    ],
+    "source": "public",
+    "aliases": [
+      "google calendar",
+      "gcal",
+      "calendar"
+    ]
+  },
+  {
+    "id": "google_calendar.gcal_delete_event",
+    "server": "google_calendar",
+    "name": "gcal_delete_event",
+    "description": "Delete a Google Calendar event.",
+    "params": [
+      "calendar_id",
+      "event_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "google calendar",
+      "gcal",
+      "calendar"
+    ]
+  },
+  {
+    "id": "google_calendar.gcal_list_calendars",
+    "server": "google_calendar",
+    "name": "gcal_list_calendars",
+    "description": "List Google calendars.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "google calendar",
+      "gcal",
+      "calendar"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_create_issue",
+    "server": "gitlab",
+    "name": "gitlab_create_issue",
+    "description": "Create a GitLab issue.",
+    "params": [
+      "project_id",
+      "title",
+      "description"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_list_issues",
+    "server": "gitlab",
+    "name": "gitlab_list_issues",
+    "description": "List GitLab issues.",
+    "params": [
+      "project_id",
+      "state"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_get_issue",
+    "server": "gitlab",
+    "name": "gitlab_get_issue",
+    "description": "Get a GitLab issue.",
+    "params": [
+      "project_id",
+      "issue_iid"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_create_merge_request",
+    "server": "gitlab",
+    "name": "gitlab_create_merge_request",
+    "description": "Create a GitLab merge request.",
+    "params": [
+      "project_id",
+      "source_branch",
+      "target_branch",
+      "title"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_list_merge_requests",
+    "server": "gitlab",
+    "name": "gitlab_list_merge_requests",
+    "description": "List GitLab merge requests.",
+    "params": [
+      "project_id",
+      "state"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_get_merge_request",
+    "server": "gitlab",
+    "name": "gitlab_get_merge_request",
+    "description": "Get a GitLab merge request.",
+    "params": [
+      "project_id",
+      "merge_request_iid"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_merge_merge_request",
+    "server": "gitlab",
+    "name": "gitlab_merge_merge_request",
+    "description": "Merge a GitLab merge request.",
+    "params": [
+      "project_id",
+      "merge_request_iid"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_list_projects",
+    "server": "gitlab",
+    "name": "gitlab_list_projects",
+    "description": "List GitLab projects.",
+    "params": [
+      "search"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_get_file",
+    "server": "gitlab",
+    "name": "gitlab_get_file",
+    "description": "Get a file from a GitLab project.",
+    "params": [
+      "project_id",
+      "file_path",
+      "ref"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.gitlab_create_pipeline",
+    "server": "gitlab",
+    "name": "gitlab_create_pipeline",
+    "description": "Create a GitLab CI pipeline.",
+    "params": [
+      "project_id",
+      "ref"
+    ],
+    "source": "public",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "bitbucket.bitbucket_create_pr",
+    "server": "bitbucket",
+    "name": "bitbucket_create_pr",
+    "description": "Create a Bitbucket pull request.",
+    "params": [
+      "workspace",
+      "repo",
+      "title",
+      "source",
+      "dest"
+    ],
+    "source": "public",
+    "aliases": [
+      "bitbucket",
+      "bb"
+    ]
+  },
+  {
+    "id": "bitbucket.bitbucket_list_prs",
+    "server": "bitbucket",
+    "name": "bitbucket_list_prs",
+    "description": "List Bitbucket pull requests.",
+    "params": [
+      "workspace",
+      "repo"
+    ],
+    "source": "public",
+    "aliases": [
+      "bitbucket",
+      "bb"
+    ]
+  },
+  {
+    "id": "bitbucket.bitbucket_create_issue",
+    "server": "bitbucket",
+    "name": "bitbucket_create_issue",
+    "description": "Create a Bitbucket issue.",
+    "params": [
+      "workspace",
+      "repo",
+      "title"
+    ],
+    "source": "public",
+    "aliases": [
+      "bitbucket",
+      "bb"
+    ]
+  },
+  {
+    "id": "bitbucket.bitbucket_list_repos",
+    "server": "bitbucket",
+    "name": "bitbucket_list_repos",
+    "description": "List Bitbucket repositories.",
+    "params": [
+      "workspace"
+    ],
+    "source": "public",
+    "aliases": [
+      "bitbucket",
+      "bb"
+    ]
+  },
+  {
+    "id": "sqlite.sqlite_query",
+    "server": "sqlite",
+    "name": "sqlite_query",
+    "description": "Run a SQL query against SQLite.",
+    "params": [
+      "sql"
+    ],
+    "source": "public",
+    "aliases": [
+      "sqlite"
+    ]
+  },
+  {
+    "id": "sqlite.sqlite_list_tables",
+    "server": "sqlite",
+    "name": "sqlite_list_tables",
+    "description": "List tables in the SQLite database.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "sqlite"
+    ]
+  },
+  {
+    "id": "sqlite.sqlite_describe_table",
+    "server": "sqlite",
+    "name": "sqlite_describe_table",
+    "description": "Describe a SQLite table.",
+    "params": [
+      "table"
+    ],
+    "source": "public",
+    "aliases": [
+      "sqlite"
+    ]
+  },
+  {
+    "id": "mysql.mysql_query",
+    "server": "mysql",
+    "name": "mysql_query",
+    "description": "Run a SQL query against MySQL.",
+    "params": [
+      "sql"
+    ],
+    "source": "public",
+    "aliases": [
+      "mysql"
+    ]
+  },
+  {
+    "id": "mysql.mysql_list_tables",
+    "server": "mysql",
+    "name": "mysql_list_tables",
+    "description": "List MySQL tables.",
+    "params": [
+      "schema"
+    ],
+    "source": "public",
+    "aliases": [
+      "mysql"
+    ]
+  },
+  {
+    "id": "mongodb.mongo_find",
+    "server": "mongodb",
+    "name": "mongo_find",
+    "description": "Find documents in a MongoDB collection.",
+    "params": [
+      "database",
+      "collection",
+      "filter"
+    ],
+    "source": "public",
+    "aliases": [
+      "mongodb",
+      "mongo"
+    ]
+  },
+  {
+    "id": "mongodb.mongo_insert",
+    "server": "mongodb",
+    "name": "mongo_insert",
+    "description": "Insert documents into MongoDB.",
+    "params": [
+      "database",
+      "collection",
+      "documents"
+    ],
+    "source": "public",
+    "aliases": [
+      "mongodb",
+      "mongo"
+    ]
+  },
+  {
+    "id": "mongodb.mongo_update",
+    "server": "mongodb",
+    "name": "mongo_update",
+    "description": "Update documents in MongoDB.",
+    "params": [
+      "database",
+      "collection",
+      "filter",
+      "update"
+    ],
+    "source": "public",
+    "aliases": [
+      "mongodb",
+      "mongo"
+    ]
+  },
+  {
+    "id": "mongodb.mongo_delete",
+    "server": "mongodb",
+    "name": "mongo_delete",
+    "description": "Delete documents from MongoDB.",
+    "params": [
+      "database",
+      "collection",
+      "filter"
+    ],
+    "source": "public",
+    "aliases": [
+      "mongodb",
+      "mongo"
+    ]
+  },
+  {
+    "id": "mongodb.mongo_list_collections",
+    "server": "mongodb",
+    "name": "mongo_list_collections",
+    "description": "List MongoDB collections.",
+    "params": [
+      "database"
+    ],
+    "source": "public",
+    "aliases": [
+      "mongodb",
+      "mongo"
+    ]
+  },
+  {
+    "id": "redis.redis_get",
+    "server": "redis",
+    "name": "redis_get",
+    "description": "Get a Redis key.",
+    "params": [
+      "key"
+    ],
+    "source": "public",
+    "aliases": [
+      "redis"
+    ]
+  },
+  {
+    "id": "redis.redis_set",
+    "server": "redis",
+    "name": "redis_set",
+    "description": "Set a Redis key.",
+    "params": [
+      "key",
+      "value",
+      "ttl"
+    ],
+    "source": "public",
+    "aliases": [
+      "redis"
+    ]
+  },
+  {
+    "id": "redis.redis_delete",
+    "server": "redis",
+    "name": "redis_delete",
+    "description": "Delete Redis keys.",
+    "params": [
+      "keys"
+    ],
+    "source": "public",
+    "aliases": [
+      "redis"
+    ]
+  },
+  {
+    "id": "redis.redis_keys",
+    "server": "redis",
+    "name": "redis_keys",
+    "description": "List Redis keys matching a pattern.",
+    "params": [
+      "pattern"
+    ],
+    "source": "public",
+    "aliases": [
+      "redis"
+    ]
+  },
+  {
+    "id": "elasticsearch.es_search",
+    "server": "elasticsearch",
+    "name": "es_search",
+    "description": "Search an Elasticsearch index.",
+    "params": [
+      "index",
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "elasticsearch",
+      "elastic"
+    ]
+  },
+  {
+    "id": "elasticsearch.es_index_doc",
+    "server": "elasticsearch",
+    "name": "es_index_doc",
+    "description": "Index a document in Elasticsearch.",
+    "params": [
+      "index",
+      "document",
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "elasticsearch",
+      "elastic"
+    ]
+  },
+  {
+    "id": "elasticsearch.es_get_doc",
+    "server": "elasticsearch",
+    "name": "es_get_doc",
+    "description": "Get a document from Elasticsearch.",
+    "params": [
+      "index",
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "elasticsearch",
+      "elastic"
+    ]
+  },
+  {
+    "id": "aws_s3.s3_list_buckets",
+    "server": "aws_s3",
+    "name": "s3_list_buckets",
+    "description": "List AWS S3 buckets.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "s3",
+      "aws s3",
+      "bucket"
+    ]
+  },
+  {
+    "id": "aws_s3.s3_list_objects",
+    "server": "aws_s3",
+    "name": "s3_list_objects",
+    "description": "List objects in an S3 bucket.",
+    "params": [
+      "bucket",
+      "prefix"
+    ],
+    "source": "public",
+    "aliases": [
+      "s3",
+      "aws s3",
+      "bucket"
+    ]
+  },
+  {
+    "id": "aws_s3.s3_get_object",
+    "server": "aws_s3",
+    "name": "s3_get_object",
+    "description": "Get an object from S3.",
+    "params": [
+      "bucket",
+      "key"
+    ],
+    "source": "public",
+    "aliases": [
+      "s3",
+      "aws s3",
+      "bucket"
+    ]
+  },
+  {
+    "id": "aws_s3.s3_put_object",
+    "server": "aws_s3",
+    "name": "s3_put_object",
+    "description": "Upload an object to S3.",
+    "params": [
+      "bucket",
+      "key",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "s3",
+      "aws s3",
+      "bucket"
+    ]
+  },
+  {
+    "id": "aws_s3.s3_delete_object",
+    "server": "aws_s3",
+    "name": "s3_delete_object",
+    "description": "Delete an S3 object.",
+    "params": [
+      "bucket",
+      "key"
+    ],
+    "source": "public",
+    "aliases": [
+      "s3",
+      "aws s3",
+      "bucket"
+    ]
+  },
+  {
+    "id": "cloudflare.cf_list_zones",
+    "server": "cloudflare",
+    "name": "cf_list_zones",
+    "description": "List Cloudflare zones.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "cloudflare"
+    ]
+  },
+  {
+    "id": "cloudflare.cf_list_dns",
+    "server": "cloudflare",
+    "name": "cf_list_dns",
+    "description": "List DNS records for a Cloudflare zone.",
+    "params": [
+      "zone_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "cloudflare"
+    ]
+  },
+  {
+    "id": "cloudflare.cf_create_dns",
+    "server": "cloudflare",
+    "name": "cf_create_dns",
+    "description": "Create a Cloudflare DNS record.",
+    "params": [
+      "zone_id",
+      "type",
+      "name",
+      "content"
+    ],
+    "source": "public",
+    "aliases": [
+      "cloudflare"
+    ]
+  },
+  {
+    "id": "cloudflare.cf_purge_cache",
+    "server": "cloudflare",
+    "name": "cf_purge_cache",
+    "description": "Purge Cloudflare cache.",
+    "params": [
+      "zone_id",
+      "files"
+    ],
+    "source": "public",
+    "aliases": [
+      "cloudflare"
+    ]
+  },
+  {
+    "id": "vercel.vercel_list_projects",
+    "server": "vercel",
+    "name": "vercel_list_projects",
+    "description": "List Vercel projects.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "vercel"
+    ]
+  },
+  {
+    "id": "vercel.vercel_list_deployments",
+    "server": "vercel",
+    "name": "vercel_list_deployments",
+    "description": "List Vercel deployments.",
+    "params": [
+      "projectId"
+    ],
+    "source": "public",
+    "aliases": [
+      "vercel"
+    ]
+  },
+  {
+    "id": "vercel.vercel_get_deployment",
+    "server": "vercel",
+    "name": "vercel_get_deployment",
+    "description": "Get a Vercel deployment.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "vercel"
+    ]
+  },
+  {
+    "id": "vercel.vercel_create_project",
+    "server": "vercel",
+    "name": "vercel_create_project",
+    "description": "Create a Vercel project.",
+    "params": [
+      "name"
+    ],
+    "source": "public",
+    "aliases": [
+      "vercel"
+    ]
+  },
+  {
+    "id": "supabase.supabase_list_tables",
+    "server": "supabase",
+    "name": "supabase_list_tables",
+    "description": "List tables in a Supabase project.",
+    "params": [],
+    "source": "public",
+    "aliases": [
+      "supabase"
+    ]
+  },
+  {
+    "id": "supabase.supabase_select",
+    "server": "supabase",
+    "name": "supabase_select",
+    "description": "Select rows from a Supabase table.",
+    "params": [
+      "table",
+      "filter"
+    ],
+    "source": "public",
+    "aliases": [
+      "supabase"
+    ]
+  },
+  {
+    "id": "supabase.supabase_insert",
+    "server": "supabase",
+    "name": "supabase_insert",
+    "description": "Insert rows into a Supabase table.",
+    "params": [
+      "table",
+      "rows"
+    ],
+    "source": "public",
+    "aliases": [
+      "supabase"
+    ]
+  },
+  {
+    "id": "supabase.supabase_update",
+    "server": "supabase",
+    "name": "supabase_update",
+    "description": "Update rows in a Supabase table.",
+    "params": [
+      "table",
+      "filter",
+      "values"
+    ],
+    "source": "public",
+    "aliases": [
+      "supabase"
+    ]
+  },
+  {
+    "id": "supabase.supabase_invoke_fn",
+    "server": "supabase",
+    "name": "supabase_invoke_fn",
+    "description": "Invoke a Supabase edge function.",
+    "params": [
+      "name",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "supabase"
+    ]
+  },
+  {
+    "id": "figma.figma_get_file",
+    "server": "figma",
+    "name": "figma_get_file",
+    "description": "Get a Figma file.",
+    "params": [
+      "file_key"
+    ],
+    "source": "public",
+    "aliases": [
+      "figma"
+    ]
+  },
+  {
+    "id": "figma.figma_get_file_nodes",
+    "server": "figma",
+    "name": "figma_get_file_nodes",
+    "description": "Get specific nodes from a Figma file.",
+    "params": [
+      "file_key",
+      "ids"
+    ],
+    "source": "public",
+    "aliases": [
+      "figma"
+    ]
+  },
+  {
+    "id": "figma.figma_get_comments",
+    "server": "figma",
+    "name": "figma_get_comments",
+    "description": "Get comments on a Figma file.",
+    "params": [
+      "file_key"
+    ],
+    "source": "public",
+    "aliases": [
+      "figma"
+    ]
+  },
+  {
+    "id": "figma.figma_post_comment",
+    "server": "figma",
+    "name": "figma_post_comment",
+    "description": "Post a comment on a Figma file.",
+    "params": [
+      "file_key",
+      "message"
+    ],
+    "source": "public",
+    "aliases": [
+      "figma"
+    ]
+  },
+  {
+    "id": "figma.figma_get_images",
+    "server": "figma",
+    "name": "figma_get_images",
+    "description": "Export images from a Figma file.",
+    "params": [
+      "file_key",
+      "ids",
+      "format"
+    ],
+    "source": "public",
+    "aliases": [
+      "figma"
+    ]
+  },
+  {
+    "id": "twilio.twilio_send_sms",
+    "server": "twilio",
+    "name": "twilio_send_sms",
+    "description": "Send an SMS via Twilio.",
+    "params": [
+      "to",
+      "from_",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "twilio",
+      "sms"
+    ]
+  },
+  {
+    "id": "twilio.twilio_list_messages",
+    "server": "twilio",
+    "name": "twilio_list_messages",
+    "description": "List Twilio SMS messages.",
+    "params": [
+      "to"
+    ],
+    "source": "public",
+    "aliases": [
+      "twilio",
+      "sms"
+    ]
+  },
+  {
+    "id": "twilio.twilio_make_call",
+    "server": "twilio",
+    "name": "twilio_make_call",
+    "description": "Place a phone call via Twilio.",
+    "params": [
+      "to",
+      "from_",
+      "url"
+    ],
+    "source": "public",
+    "aliases": [
+      "twilio",
+      "sms"
+    ]
+  },
+  {
+    "id": "okta.okta_list_users",
+    "server": "okta",
+    "name": "okta_list_users",
+    "description": "List Okta users.",
+    "params": [
+      "q"
+    ],
+    "source": "public",
+    "aliases": [
+      "okta"
+    ]
+  },
+  {
+    "id": "okta.okta_get_user",
+    "server": "okta",
+    "name": "okta_get_user",
+    "description": "Get an Okta user.",
+    "params": [
+      "user_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "okta"
+    ]
+  },
+  {
+    "id": "okta.okta_create_user",
+    "server": "okta",
+    "name": "okta_create_user",
+    "description": "Create an Okta user.",
+    "params": [
+      "profile"
+    ],
+    "source": "public",
+    "aliases": [
+      "okta"
+    ]
+  },
+  {
+    "id": "okta.okta_deactivate_user",
+    "server": "okta",
+    "name": "okta_deactivate_user",
+    "description": "Deactivate an Okta user.",
+    "params": [
+      "user_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "okta"
+    ]
+  },
+  {
+    "id": "prometheus.prom_query",
+    "server": "prometheus",
+    "name": "prom_query",
+    "description": "Instant query Prometheus.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "prometheus"
+    ]
+  },
+  {
+    "id": "prometheus.prom_query_range",
+    "server": "prometheus",
+    "name": "prom_query_range",
+    "description": "Range query Prometheus.",
+    "params": [
+      "query",
+      "start",
+      "end",
+      "step"
+    ],
+    "source": "public",
+    "aliases": [
+      "prometheus"
+    ]
+  },
+  {
+    "id": "prometheus.prom_list_metrics",
+    "server": "prometheus",
+    "name": "prom_list_metrics",
+    "description": "List Prometheus metric names.",
+    "params": [
+      "match"
+    ],
+    "source": "public",
+    "aliases": [
+      "prometheus"
+    ]
+  },
+  {
+    "id": "grafana.grafana_search_dashboards",
+    "server": "grafana",
+    "name": "grafana_search_dashboards",
+    "description": "Search Grafana dashboards.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "grafana"
+    ]
+  },
+  {
+    "id": "grafana.grafana_get_dashboard",
+    "server": "grafana",
+    "name": "grafana_get_dashboard",
+    "description": "Get a Grafana dashboard.",
+    "params": [
+      "uid"
+    ],
+    "source": "public",
+    "aliases": [
+      "grafana"
+    ]
+  },
+  {
+    "id": "grafana.grafana_create_annotation",
+    "server": "grafana",
+    "name": "grafana_create_annotation",
+    "description": "Create a Grafana annotation.",
+    "params": [
+      "text",
+      "time",
+      "tags"
+    ],
+    "source": "public",
+    "aliases": [
+      "grafana"
+    ]
+  },
+  {
+    "id": "circleci.circleci_list_pipelines",
+    "server": "circleci",
+    "name": "circleci_list_pipelines",
+    "description": "List CircleCI pipelines.",
+    "params": [
+      "project_slug"
+    ],
+    "source": "public",
+    "aliases": [
+      "circleci",
+      "ci"
+    ]
+  },
+  {
+    "id": "circleci.circleci_get_pipeline",
+    "server": "circleci",
+    "name": "circleci_get_pipeline",
+    "description": "Get a CircleCI pipeline.",
+    "params": [
+      "pipeline_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "circleci",
+      "ci"
+    ]
+  },
+  {
+    "id": "circleci.circleci_trigger_pipeline",
+    "server": "circleci",
+    "name": "circleci_trigger_pipeline",
+    "description": "Trigger a CircleCI pipeline.",
+    "params": [
+      "project_slug",
+      "branch"
+    ],
+    "source": "public",
+    "aliases": [
+      "circleci",
+      "ci"
+    ]
+  },
+  {
+    "id": "terraform.tf_plan",
+    "server": "terraform",
+    "name": "tf_plan",
+    "description": "Run terraform plan.",
+    "params": [
+      "dir"
+    ],
+    "source": "public",
+    "aliases": [
+      "terraform"
+    ]
+  },
+  {
+    "id": "terraform.tf_apply",
+    "server": "terraform",
+    "name": "tf_apply",
+    "description": "Run terraform apply.",
+    "params": [
+      "dir",
+      "auto_approve"
+    ],
+    "source": "public",
+    "aliases": [
+      "terraform"
+    ]
+  },
+  {
+    "id": "terraform.tf_state_list",
+    "server": "terraform",
+    "name": "tf_state_list",
+    "description": "List resources in terraform state.",
+    "params": [
+      "dir"
+    ],
+    "source": "public",
+    "aliases": [
+      "terraform"
+    ]
+  },
+  {
+    "id": "asana.asana_create_task",
+    "server": "asana",
+    "name": "asana_create_task",
+    "description": "Create an Asana task.",
+    "params": [
+      "name",
+      "notes",
+      "projects",
+      "assignee"
+    ],
+    "source": "public",
+    "aliases": [
+      "asana"
+    ]
+  },
+  {
+    "id": "asana.asana_list_tasks",
+    "server": "asana",
+    "name": "asana_list_tasks",
+    "description": "List Asana tasks.",
+    "params": [
+      "project",
+      "assignee"
+    ],
+    "source": "public",
+    "aliases": [
+      "asana"
+    ]
+  },
+  {
+    "id": "asana.asana_get_task",
+    "server": "asana",
+    "name": "asana_get_task",
+    "description": "Get an Asana task.",
+    "params": [
+      "task_gid"
+    ],
+    "source": "public",
+    "aliases": [
+      "asana"
+    ]
+  },
+  {
+    "id": "asana.asana_update_task",
+    "server": "asana",
+    "name": "asana_update_task",
+    "description": "Update an Asana task.",
+    "params": [
+      "task_gid",
+      "name",
+      "completed"
+    ],
+    "source": "public",
+    "aliases": [
+      "asana"
+    ]
+  },
+  {
+    "id": "asana.asana_create_project",
+    "server": "asana",
+    "name": "asana_create_project",
+    "description": "Create an Asana project.",
+    "params": [
+      "name",
+      "workspace"
+    ],
+    "source": "public",
+    "aliases": [
+      "asana"
+    ]
+  },
+  {
+    "id": "trello.trello_create_card",
+    "server": "trello",
+    "name": "trello_create_card",
+    "description": "Create a Trello card.",
+    "params": [
+      "idList",
+      "name",
+      "desc"
+    ],
+    "source": "public",
+    "aliases": [
+      "trello"
+    ]
+  },
+  {
+    "id": "trello.trello_list_cards",
+    "server": "trello",
+    "name": "trello_list_cards",
+    "description": "List cards on a Trello board or list.",
+    "params": [
+      "idBoard",
+      "idList"
+    ],
+    "source": "public",
+    "aliases": [
+      "trello"
+    ]
+  },
+  {
+    "id": "trello.trello_create_board",
+    "server": "trello",
+    "name": "trello_create_board",
+    "description": "Create a Trello board.",
+    "params": [
+      "name"
+    ],
+    "source": "public",
+    "aliases": [
+      "trello"
+    ]
+  },
+  {
+    "id": "trello.trello_add_comment",
+    "server": "trello",
+    "name": "trello_add_comment",
+    "description": "Comment on a Trello card.",
+    "params": [
+      "idCard",
+      "text"
+    ],
+    "source": "public",
+    "aliases": [
+      "trello"
+    ]
+  },
+  {
+    "id": "clickup.clickup_create_task",
+    "server": "clickup",
+    "name": "clickup_create_task",
+    "description": "Create a ClickUp task.",
+    "params": [
+      "list_id",
+      "name",
+      "description"
+    ],
+    "source": "public",
+    "aliases": [
+      "clickup",
+      "click up"
+    ]
+  },
+  {
+    "id": "clickup.clickup_list_tasks",
+    "server": "clickup",
+    "name": "clickup_list_tasks",
+    "description": "List ClickUp tasks.",
+    "params": [
+      "list_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "clickup",
+      "click up"
+    ]
+  },
+  {
+    "id": "clickup.clickup_get_task",
+    "server": "clickup",
+    "name": "clickup_get_task",
+    "description": "Get a ClickUp task.",
+    "params": [
+      "task_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "clickup",
+      "click up"
+    ]
+  },
+  {
+    "id": "clickup.clickup_update_task",
+    "server": "clickup",
+    "name": "clickup_update_task",
+    "description": "Update a ClickUp task.",
+    "params": [
+      "task_id",
+      "name",
+      "status"
+    ],
+    "source": "public",
+    "aliases": [
+      "clickup",
+      "click up"
+    ]
+  },
+  {
+    "id": "confluence.confluence_get_page",
+    "server": "confluence",
+    "name": "confluence_get_page",
+    "description": "Get a Confluence page.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "confluence"
+    ]
+  },
+  {
+    "id": "confluence.confluence_create_page",
+    "server": "confluence",
+    "name": "confluence_create_page",
+    "description": "Create a Confluence page.",
+    "params": [
+      "spaceId",
+      "title",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "confluence"
+    ]
+  },
+  {
+    "id": "confluence.confluence_update_page",
+    "server": "confluence",
+    "name": "confluence_update_page",
+    "description": "Update a Confluence page.",
+    "params": [
+      "id",
+      "title",
+      "body"
+    ],
+    "source": "public",
+    "aliases": [
+      "confluence"
+    ]
+  },
+  {
+    "id": "confluence.confluence_search",
+    "server": "confluence",
+    "name": "confluence_search",
+    "description": "Search Confluence content.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "confluence"
+    ]
+  },
+  {
+    "id": "hubspot.hubspot_create_contact",
+    "server": "hubspot",
+    "name": "hubspot_create_contact",
+    "description": "Create a HubSpot contact.",
+    "params": [
+      "email",
+      "firstname",
+      "lastname"
+    ],
+    "source": "public",
+    "aliases": [
+      "hubspot"
+    ]
+  },
+  {
+    "id": "hubspot.hubspot_get_contact",
+    "server": "hubspot",
+    "name": "hubspot_get_contact",
+    "description": "Get a HubSpot contact.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "hubspot"
+    ]
+  },
+  {
+    "id": "hubspot.hubspot_list_contacts",
+    "server": "hubspot",
+    "name": "hubspot_list_contacts",
+    "description": "List HubSpot contacts.",
+    "params": [
+      "limit"
+    ],
+    "source": "public",
+    "aliases": [
+      "hubspot"
+    ]
+  },
+  {
+    "id": "hubspot.hubspot_create_deal",
+    "server": "hubspot",
+    "name": "hubspot_create_deal",
+    "description": "Create a HubSpot deal.",
+    "params": [
+      "dealname",
+      "amount",
+      "pipeline"
+    ],
+    "source": "public",
+    "aliases": [
+      "hubspot"
+    ]
+  },
+  {
+    "id": "hubspot.hubspot_search_contacts",
+    "server": "hubspot",
+    "name": "hubspot_search_contacts",
+    "description": "Search HubSpot contacts.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "hubspot"
+    ]
+  },
+  {
+    "id": "zendesk.zendesk_create_ticket",
+    "server": "zendesk",
+    "name": "zendesk_create_ticket",
+    "description": "Create a Zendesk support ticket.",
+    "params": [
+      "subject",
+      "comment",
+      "requester"
+    ],
+    "source": "public",
+    "aliases": [
+      "zendesk"
+    ]
+  },
+  {
+    "id": "zendesk.zendesk_get_ticket",
+    "server": "zendesk",
+    "name": "zendesk_get_ticket",
+    "description": "Get a Zendesk ticket.",
+    "params": [
+      "id"
+    ],
+    "source": "public",
+    "aliases": [
+      "zendesk"
+    ]
+  },
+  {
+    "id": "zendesk.zendesk_list_tickets",
+    "server": "zendesk",
+    "name": "zendesk_list_tickets",
+    "description": "List Zendesk tickets.",
+    "params": [
+      "status"
+    ],
+    "source": "public",
+    "aliases": [
+      "zendesk"
+    ]
+  },
+  {
+    "id": "zendesk.zendesk_update_ticket",
+    "server": "zendesk",
+    "name": "zendesk_update_ticket",
+    "description": "Update a Zendesk ticket.",
+    "params": [
+      "id",
+      "status",
+      "comment"
+    ],
+    "source": "public",
+    "aliases": [
+      "zendesk"
+    ]
+  },
+  {
+    "id": "zendesk.zendesk_search",
+    "server": "zendesk",
+    "name": "zendesk_search",
+    "description": "Search Zendesk tickets and users.",
+    "params": [
+      "query"
+    ],
+    "source": "public",
+    "aliases": [
+      "zendesk"
+    ]
+  },
+  {
+    "id": "discord.discord_send_message",
+    "server": "discord",
+    "name": "discord_send_message",
+    "description": "Send a message to a Discord channel.",
+    "params": [
+      "channel_id",
+      "content"
+    ],
+    "source": "public",
+    "aliases": [
+      "discord"
+    ]
+  },
+  {
+    "id": "discord.discord_list_channels",
+    "server": "discord",
+    "name": "discord_list_channels",
+    "description": "List Discord guild channels.",
+    "params": [
+      "guild_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "discord"
+    ]
+  },
+  {
+    "id": "discord.discord_get_channel",
+    "server": "discord",
+    "name": "discord_get_channel",
+    "description": "Get a Discord channel.",
+    "params": [
+      "channel_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "discord"
+    ]
+  },
+  {
+    "id": "discord.discord_add_reaction",
+    "server": "discord",
+    "name": "discord_add_reaction",
+    "description": "Add a reaction to a Discord message.",
+    "params": [
+      "channel_id",
+      "message_id",
+      "emoji"
+    ],
+    "source": "public",
+    "aliases": [
+      "discord"
+    ]
+  },
+  {
+    "id": "discord.discord_list_members",
+    "server": "discord",
+    "name": "discord_list_members",
+    "description": "List Discord guild members.",
+    "params": [
+      "guild_id"
+    ],
+    "source": "public",
+    "aliases": [
+      "discord"
+    ]
+  },
+  {
+    "id": "github.create_milestone",
+    "server": "github",
+    "name": "create_milestone",
+    "description": "Create a milestone in github.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_milestone",
+    "server": "github",
+    "name": "get_milestone",
+    "description": "Get a milestone in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_milestones",
+    "server": "github",
+    "name": "list_milestones",
+    "description": "List milestones in github.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_milestone",
+    "server": "github",
+    "name": "update_milestone",
+    "description": "Update a milestone in github.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_milestone",
+    "server": "github",
+    "name": "delete_milestone",
+    "description": "Delete a milestone in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_hook",
+    "server": "github",
+    "name": "create_hook",
+    "description": "Create a hook in github.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_hook",
+    "server": "github",
+    "name": "get_hook",
+    "description": "Get a hook in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_hooks",
+    "server": "github",
+    "name": "list_hooks",
+    "description": "List hooks in github.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_hook",
+    "server": "github",
+    "name": "update_hook",
+    "description": "Update a hook in github.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_hook",
+    "server": "github",
+    "name": "delete_hook",
+    "description": "Delete a hook in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_environment",
+    "server": "github",
+    "name": "create_environment",
+    "description": "Create a environment in github.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_environment",
+    "server": "github",
+    "name": "get_environment",
+    "description": "Get a environment in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_environments",
+    "server": "github",
+    "name": "list_environments",
+    "description": "List environments in github.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_environment",
+    "server": "github",
+    "name": "update_environment",
+    "description": "Update a environment in github.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_environment",
+    "server": "github",
+    "name": "delete_environment",
+    "description": "Delete a environment in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_package",
+    "server": "github",
+    "name": "create_package",
+    "description": "Create a package in github.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_package",
+    "server": "github",
+    "name": "get_package",
+    "description": "Get a package in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_packages",
+    "server": "github",
+    "name": "list_packages",
+    "description": "List packages in github.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_package",
+    "server": "github",
+    "name": "update_package",
+    "description": "Update a package in github.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_package",
+    "server": "github",
+    "name": "delete_package",
+    "description": "Delete a package in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_check_run",
+    "server": "github",
+    "name": "create_check_run",
+    "description": "Create a check run in github.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_check_run",
+    "server": "github",
+    "name": "get_check_run",
+    "description": "Get a check run in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_check_runs",
+    "server": "github",
+    "name": "list_check_runs",
+    "description": "List check runs in github.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_check_run",
+    "server": "github",
+    "name": "update_check_run",
+    "description": "Update a check run in github.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_check_run",
+    "server": "github",
+    "name": "delete_check_run",
+    "description": "Delete a check run in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_artifact",
+    "server": "github",
+    "name": "create_artifact",
+    "description": "Create a artifact in github.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_artifact",
+    "server": "github",
+    "name": "get_artifact",
+    "description": "Get a artifact in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_artifacts",
+    "server": "github",
+    "name": "list_artifacts",
+    "description": "List artifacts in github.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_artifact",
+    "server": "github",
+    "name": "update_artifact",
+    "description": "Update a artifact in github.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_artifact",
+    "server": "github",
+    "name": "delete_artifact",
+    "description": "Delete a artifact in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.create_runner",
+    "server": "github",
+    "name": "create_runner",
+    "description": "Create a runner in github.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.get_runner",
+    "server": "github",
+    "name": "get_runner",
+    "description": "Get a runner in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.list_runners",
+    "server": "github",
+    "name": "list_runners",
+    "description": "List runners in github.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.update_runner",
+    "server": "github",
+    "name": "update_runner",
+    "description": "Update a runner in github.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "github.delete_runner",
+    "server": "github",
+    "name": "delete_runner",
+    "description": "Delete a runner in github.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "github",
+      "gh",
+      "git hub"
+    ]
+  },
+  {
+    "id": "gitlab.create_pipeline",
+    "server": "gitlab",
+    "name": "create_pipeline",
+    "description": "Create a pipeline in gitlab.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.get_pipeline",
+    "server": "gitlab",
+    "name": "get_pipeline",
+    "description": "Get a pipeline in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.list_pipelines",
+    "server": "gitlab",
+    "name": "list_pipelines",
+    "description": "List pipelines in gitlab.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.update_pipeline",
+    "server": "gitlab",
+    "name": "update_pipeline",
+    "description": "Update a pipeline in gitlab.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.delete_pipeline",
+    "server": "gitlab",
+    "name": "delete_pipeline",
+    "description": "Delete a pipeline in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.create_job",
+    "server": "gitlab",
+    "name": "create_job",
+    "description": "Create a job in gitlab.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.get_job",
+    "server": "gitlab",
+    "name": "get_job",
+    "description": "Get a job in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.list_jobs",
+    "server": "gitlab",
+    "name": "list_jobs",
+    "description": "List jobs in gitlab.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.update_job",
+    "server": "gitlab",
+    "name": "update_job",
+    "description": "Update a job in gitlab.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.delete_job",
+    "server": "gitlab",
+    "name": "delete_job",
+    "description": "Delete a job in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.create_wiki",
+    "server": "gitlab",
+    "name": "create_wiki",
+    "description": "Create a wiki in gitlab.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.get_wiki",
+    "server": "gitlab",
+    "name": "get_wiki",
+    "description": "Get a wiki in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.list_wikis",
+    "server": "gitlab",
+    "name": "list_wikis",
+    "description": "List wikis in gitlab.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.update_wiki",
+    "server": "gitlab",
+    "name": "update_wiki",
+    "description": "Update a wiki in gitlab.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.delete_wiki",
+    "server": "gitlab",
+    "name": "delete_wiki",
+    "description": "Delete a wiki in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.create_snippet",
+    "server": "gitlab",
+    "name": "create_snippet",
+    "description": "Create a snippet in gitlab.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.get_snippet",
+    "server": "gitlab",
+    "name": "get_snippet",
+    "description": "Get a snippet in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.list_snippets",
+    "server": "gitlab",
+    "name": "list_snippets",
+    "description": "List snippets in gitlab.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.update_snippet",
+    "server": "gitlab",
+    "name": "update_snippet",
+    "description": "Update a snippet in gitlab.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.delete_snippet",
+    "server": "gitlab",
+    "name": "delete_snippet",
+    "description": "Delete a snippet in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.create_label",
+    "server": "gitlab",
+    "name": "create_label",
+    "description": "Create a label in gitlab.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.get_label",
+    "server": "gitlab",
+    "name": "get_label",
+    "description": "Get a label in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.list_labels",
+    "server": "gitlab",
+    "name": "list_labels",
+    "description": "List labels in gitlab.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.update_label",
+    "server": "gitlab",
+    "name": "update_label",
+    "description": "Update a label in gitlab.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.delete_label",
+    "server": "gitlab",
+    "name": "delete_label",
+    "description": "Delete a label in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.create_milestone",
+    "server": "gitlab",
+    "name": "create_milestone",
+    "description": "Create a milestone in gitlab.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.get_milestone",
+    "server": "gitlab",
+    "name": "get_milestone",
+    "description": "Get a milestone in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.list_milestones",
+    "server": "gitlab",
+    "name": "list_milestones",
+    "description": "List milestones in gitlab.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.update_milestone",
+    "server": "gitlab",
+    "name": "update_milestone",
+    "description": "Update a milestone in gitlab.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.delete_milestone",
+    "server": "gitlab",
+    "name": "delete_milestone",
+    "description": "Delete a milestone in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.create_release",
+    "server": "gitlab",
+    "name": "create_release",
+    "description": "Create a release in gitlab.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.get_release",
+    "server": "gitlab",
+    "name": "get_release",
+    "description": "Get a release in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.list_releases",
+    "server": "gitlab",
+    "name": "list_releases",
+    "description": "List releases in gitlab.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.update_release",
+    "server": "gitlab",
+    "name": "update_release",
+    "description": "Update a release in gitlab.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "gitlab.delete_release",
+    "server": "gitlab",
+    "name": "delete_release",
+    "description": "Delete a release in gitlab.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "gitlab",
+      "gl"
+    ]
+  },
+  {
+    "id": "jira.create_board",
+    "server": "jira",
+    "name": "create_board",
+    "description": "Create a board in jira.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.get_board",
+    "server": "jira",
+    "name": "get_board",
+    "description": "Get a board in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.list_boards",
+    "server": "jira",
+    "name": "list_boards",
+    "description": "List boards in jira.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.update_board",
+    "server": "jira",
+    "name": "update_board",
+    "description": "Update a board in jira.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.delete_board",
+    "server": "jira",
+    "name": "delete_board",
+    "description": "Delete a board in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.create_sprint",
+    "server": "jira",
+    "name": "create_sprint",
+    "description": "Create a sprint in jira.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.get_sprint",
+    "server": "jira",
+    "name": "get_sprint",
+    "description": "Get a sprint in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.list_sprints",
+    "server": "jira",
+    "name": "list_sprints",
+    "description": "List sprints in jira.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.update_sprint",
+    "server": "jira",
+    "name": "update_sprint",
+    "description": "Update a sprint in jira.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.delete_sprint",
+    "server": "jira",
+    "name": "delete_sprint",
+    "description": "Delete a sprint in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.create_filter",
+    "server": "jira",
+    "name": "create_filter",
+    "description": "Create a filter in jira.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.get_filter",
+    "server": "jira",
+    "name": "get_filter",
+    "description": "Get a filter in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.list_filters",
+    "server": "jira",
+    "name": "list_filters",
+    "description": "List filters in jira.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.update_filter",
+    "server": "jira",
+    "name": "update_filter",
+    "description": "Update a filter in jira.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.delete_filter",
+    "server": "jira",
+    "name": "delete_filter",
+    "description": "Delete a filter in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.create_webhook",
+    "server": "jira",
+    "name": "create_webhook",
+    "description": "Create a webhook in jira.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.get_webhook",
+    "server": "jira",
+    "name": "get_webhook",
+    "description": "Get a webhook in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.list_webhooks",
+    "server": "jira",
+    "name": "list_webhooks",
+    "description": "List webhooks in jira.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.update_webhook",
+    "server": "jira",
+    "name": "update_webhook",
+    "description": "Update a webhook in jira.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.delete_webhook",
+    "server": "jira",
+    "name": "delete_webhook",
+    "description": "Delete a webhook in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.create_attachment",
+    "server": "jira",
+    "name": "create_attachment",
+    "description": "Create a attachment in jira.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.get_attachment",
+    "server": "jira",
+    "name": "get_attachment",
+    "description": "Get a attachment in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.list_attachments",
+    "server": "jira",
+    "name": "list_attachments",
+    "description": "List attachments in jira.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.update_attachment",
+    "server": "jira",
+    "name": "update_attachment",
+    "description": "Update a attachment in jira.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.delete_attachment",
+    "server": "jira",
+    "name": "delete_attachment",
+    "description": "Delete a attachment in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.create_version",
+    "server": "jira",
+    "name": "create_version",
+    "description": "Create a version in jira.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.get_version",
+    "server": "jira",
+    "name": "get_version",
+    "description": "Get a version in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.list_versions",
+    "server": "jira",
+    "name": "list_versions",
+    "description": "List versions in jira.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.update_version",
+    "server": "jira",
+    "name": "update_version",
+    "description": "Update a version in jira.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "jira.delete_version",
+    "server": "jira",
+    "name": "delete_version",
+    "description": "Delete a version in jira.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "jira",
+      "atlassian"
+    ]
+  },
+  {
+    "id": "linear.create_cycle",
+    "server": "linear",
+    "name": "create_cycle",
+    "description": "Create a cycle in linear.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.get_cycle",
+    "server": "linear",
+    "name": "get_cycle",
+    "description": "Get a cycle in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.list_cycles",
+    "server": "linear",
+    "name": "list_cycles",
+    "description": "List cycles in linear.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.update_cycle",
+    "server": "linear",
+    "name": "update_cycle",
+    "description": "Update a cycle in linear.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.delete_cycle",
+    "server": "linear",
+    "name": "delete_cycle",
+    "description": "Delete a cycle in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.create_label",
+    "server": "linear",
+    "name": "create_label",
+    "description": "Create a label in linear.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.get_label",
+    "server": "linear",
+    "name": "get_label",
+    "description": "Get a label in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.list_labels",
+    "server": "linear",
+    "name": "list_labels",
+    "description": "List labels in linear.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.update_label",
+    "server": "linear",
+    "name": "update_label",
+    "description": "Update a label in linear.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.delete_label",
+    "server": "linear",
+    "name": "delete_label",
+    "description": "Delete a label in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.create_user",
+    "server": "linear",
+    "name": "create_user",
+    "description": "Create a user in linear.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.get_user",
+    "server": "linear",
+    "name": "get_user",
+    "description": "Get a user in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.list_users",
+    "server": "linear",
+    "name": "list_users",
+    "description": "List users in linear.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.update_user",
+    "server": "linear",
+    "name": "update_user",
+    "description": "Update a user in linear.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.delete_user",
+    "server": "linear",
+    "name": "delete_user",
+    "description": "Delete a user in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.create_comment",
+    "server": "linear",
+    "name": "create_comment",
+    "description": "Create a comment in linear.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.get_comment",
+    "server": "linear",
+    "name": "get_comment",
+    "description": "Get a comment in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.list_comments",
+    "server": "linear",
+    "name": "list_comments",
+    "description": "List comments in linear.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.update_comment",
+    "server": "linear",
+    "name": "update_comment",
+    "description": "Update a comment in linear.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.delete_comment",
+    "server": "linear",
+    "name": "delete_comment",
+    "description": "Delete a comment in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.create_attachment",
+    "server": "linear",
+    "name": "create_attachment",
+    "description": "Create a attachment in linear.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.get_attachment",
+    "server": "linear",
+    "name": "get_attachment",
+    "description": "Get a attachment in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.list_attachments",
+    "server": "linear",
+    "name": "list_attachments",
+    "description": "List attachments in linear.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.update_attachment",
+    "server": "linear",
+    "name": "update_attachment",
+    "description": "Update a attachment in linear.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "linear.delete_attachment",
+    "server": "linear",
+    "name": "delete_attachment",
+    "description": "Delete a attachment in linear.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "linear"
+    ]
+  },
+  {
+    "id": "slack.create_reminder",
+    "server": "slack",
+    "name": "create_reminder",
+    "description": "Create a reminder in slack.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.get_reminder",
+    "server": "slack",
+    "name": "get_reminder",
+    "description": "Get a reminder in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.list_reminders",
+    "server": "slack",
+    "name": "list_reminders",
+    "description": "List reminders in slack.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.update_reminder",
+    "server": "slack",
+    "name": "update_reminder",
+    "description": "Update a reminder in slack.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.delete_reminder",
+    "server": "slack",
+    "name": "delete_reminder",
+    "description": "Delete a reminder in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.create_canvase",
+    "server": "slack",
+    "name": "create_canvase",
+    "description": "Create a canvase in slack.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.get_canvase",
+    "server": "slack",
+    "name": "get_canvase",
+    "description": "Get a canvase in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.list_canvases",
+    "server": "slack",
+    "name": "list_canvases",
+    "description": "List canvases in slack.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.update_canvase",
+    "server": "slack",
+    "name": "update_canvase",
+    "description": "Update a canvase in slack.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.delete_canvase",
+    "server": "slack",
+    "name": "delete_canvase",
+    "description": "Delete a canvase in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.create_bookmark",
+    "server": "slack",
+    "name": "create_bookmark",
+    "description": "Create a bookmark in slack.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.get_bookmark",
+    "server": "slack",
+    "name": "get_bookmark",
+    "description": "Get a bookmark in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.list_bookmarks",
+    "server": "slack",
+    "name": "list_bookmarks",
+    "description": "List bookmarks in slack.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.update_bookmark",
+    "server": "slack",
+    "name": "update_bookmark",
+    "description": "Update a bookmark in slack.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.delete_bookmark",
+    "server": "slack",
+    "name": "delete_bookmark",
+    "description": "Delete a bookmark in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.create_usergroup",
+    "server": "slack",
+    "name": "create_usergroup",
+    "description": "Create a usergroup in slack.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.get_usergroup",
+    "server": "slack",
+    "name": "get_usergroup",
+    "description": "Get a usergroup in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.list_usergroups",
+    "server": "slack",
+    "name": "list_usergroups",
+    "description": "List usergroups in slack.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.update_usergroup",
+    "server": "slack",
+    "name": "update_usergroup",
+    "description": "Update a usergroup in slack.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.delete_usergroup",
+    "server": "slack",
+    "name": "delete_usergroup",
+    "description": "Delete a usergroup in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.create_file",
+    "server": "slack",
+    "name": "create_file",
+    "description": "Create a file in slack.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.get_file",
+    "server": "slack",
+    "name": "get_file",
+    "description": "Get a file in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.list_files",
+    "server": "slack",
+    "name": "list_files",
+    "description": "List files in slack.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.update_file",
+    "server": "slack",
+    "name": "update_file",
+    "description": "Update a file in slack.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.delete_file",
+    "server": "slack",
+    "name": "delete_file",
+    "description": "Delete a file in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.create_pin",
+    "server": "slack",
+    "name": "create_pin",
+    "description": "Create a pin in slack.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.get_pin",
+    "server": "slack",
+    "name": "get_pin",
+    "description": "Get a pin in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.list_pins",
+    "server": "slack",
+    "name": "list_pins",
+    "description": "List pins in slack.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.update_pin",
+    "server": "slack",
+    "name": "update_pin",
+    "description": "Update a pin in slack.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "slack.delete_pin",
+    "server": "slack",
+    "name": "delete_pin",
+    "description": "Delete a pin in slack.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "slack"
+    ]
+  },
+  {
+    "id": "notion.create_comment",
+    "server": "notion",
+    "name": "create_comment",
+    "description": "Create a comment in notion.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.get_comment",
+    "server": "notion",
+    "name": "get_comment",
+    "description": "Get a comment in notion.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.list_comments",
+    "server": "notion",
+    "name": "list_comments",
+    "description": "List comments in notion.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.update_comment",
+    "server": "notion",
+    "name": "update_comment",
+    "description": "Update a comment in notion.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.delete_comment",
+    "server": "notion",
+    "name": "delete_comment",
+    "description": "Delete a comment in notion.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.create_users_token",
+    "server": "notion",
+    "name": "create_users_token",
+    "description": "Create a users token in notion.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.get_users_token",
+    "server": "notion",
+    "name": "get_users_token",
+    "description": "Get a users token in notion.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.list_users_tokens",
+    "server": "notion",
+    "name": "list_users_tokens",
+    "description": "List users tokens in notion.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.update_users_token",
+    "server": "notion",
+    "name": "update_users_token",
+    "description": "Update a users token in notion.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.delete_users_token",
+    "server": "notion",
+    "name": "delete_users_token",
+    "description": "Delete a users token in notion.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.create_data_source",
+    "server": "notion",
+    "name": "create_data_source",
+    "description": "Create a data source in notion.",
+    "params": [
+      "name",
+      "title",
+      "description",
+      "body"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.get_data_source",
+    "server": "notion",
+    "name": "get_data_source",
+    "description": "Get a data source in notion.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.list_data_sources",
+    "server": "notion",
+    "name": "list_data_sources",
+    "description": "List data sources in notion.",
+    "params": [
+      "limit",
+      "cursor",
+      "status"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.update_data_source",
+    "server": "notion",
+    "name": "update_data_source",
+    "description": "Update a data source in notion.",
+    "params": [
+      "id",
+      "fields"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  },
+  {
+    "id": "notion.delete_data_source",
+    "server": "notion",
+    "name": "delete_data_source",
+    "description": "Delete a data source in notion.",
+    "params": [
+      "id"
+    ],
+    "source": "expanded",
+    "aliases": [
+      "notion"
+    ]
+  }
+]

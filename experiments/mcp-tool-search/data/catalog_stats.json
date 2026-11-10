@@ -1,0 +1,11 @@
+{
+  "n_tools": 536,
+  "n_queries": 150,
+  "n_servers": 51,
+  "by_source": {
+    "public": 366,
+    "expanded": 170
+  },
+  "reproduction": true,
+  "zed_fixtures_public": false
+}

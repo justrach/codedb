@@ -1,0 +1,1851 @@
+{
+  "encoding": "o200k_base",
+  "page_ks": [
+    3,
+    5,
+    10
+  ],
+  "n_queries": 150,
+  "n_tools": 536,
+  "all_schemas_baseline": {
+    "n_tools": 536,
+    "tokens_per_turn": 38003,
+    "encoding": "o200k_base",
+    "payload_bytes": 170223
+  },
+  "methods": [
+    {
+      "name": "bm25_desc_only",
+      "recall@1": 0.8266666666666667,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.9,
+          "p95_calls": 2.0,
+          "success_within_1": 0.9266666666666666,
+          "success_within_2": 0.9666666666666667,
+          "success_within_3": 0.9733333333333334,
+          "mean_tokens": 466.9066666666667,
+          "p95_tokens": 441.14999999999975,
+          "total_tokens": 70036,
+          "tokens_per_successful_query": 466.9066666666667,
+          "total_tokens_successful": 70036
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.52,
+          "p95_calls": 1.0,
+          "success_within_1": 0.96,
+          "success_within_2": 0.9733333333333334,
+          "success_within_3": 0.9733333333333334,
+          "mean_tokens": 597.2933333333333,
+          "p95_tokens": 598.2999999999995,
+          "total_tokens": 89594,
+          "tokens_per_successful_query": 597.2933333333333,
+          "total_tokens_successful": 89594
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.24,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9733333333333334,
+          "success_within_3": 0.9733333333333334,
+          "mean_tokens": 932.4666666666667,
+          "p95_tokens": 1045.0499999999997,
+          "total_tokens": 139870,
+          "tokens_per_successful_query": 932.4666666666667,
+          "total_tokens_successful": 139870
+        }
+      }
+    },
+    {
+      "name": "bm25_ident_split",
+      "recall@1": 0.9066666666666666,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.34,
+          "p95_calls": 1.0,
+          "success_within_1": 0.98,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 315.88,
+          "p95_tokens": 332.54999999999995,
+          "total_tokens": 47382,
+          "tokens_per_successful_query": 315.88,
+          "total_tokens_successful": 47382
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.2,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 452.35333333333335,
+          "p95_tokens": 515.3999999999988,
+          "total_tokens": 67853,
+          "tokens_per_successful_query": 452.35333333333335,
+          "total_tokens_successful": 67853
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0933333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 795.3866666666667,
+          "p95_tokens": 1001.0,
+          "total_tokens": 119308,
+          "tokens_per_successful_query": 795.3866666666667,
+          "total_tokens_successful": 119308
+        }
+      }
+    },
+    {
+      "name": "bm25_name_only",
+      "recall@1": 0.82,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 3.7666666666666666,
+          "p95_calls": 3.549999999999983,
+          "success_within_1": 0.9,
+          "success_within_2": 0.94,
+          "success_within_3": 0.9466666666666667,
+          "mean_tokens": 924.0666666666667,
+          "p95_tokens": 975.8499999999945,
+          "total_tokens": 138610,
+          "tokens_per_successful_query": 924.0666666666667,
+          "total_tokens_successful": 138610
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 2.6333333333333333,
+          "p95_calls": 2.549999999999983,
+          "success_within_1": 0.9266666666666666,
+          "success_within_2": 0.9466666666666667,
+          "success_within_3": 0.9533333333333334,
+          "mean_tokens": 1035.96,
+          "p95_tokens": 1114.8999999999976,
+          "total_tokens": 155394,
+          "tokens_per_successful_query": 1035.96,
+          "total_tokens_successful": 155394
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.7933333333333332,
+          "p95_calls": 1.549999999999983,
+          "success_within_1": 0.9466666666666667,
+          "success_within_2": 0.9533333333333334,
+          "success_within_3": 0.9533333333333334,
+          "mean_tokens": 1365.6933333333334,
+          "p95_tokens": 1301.8499999999954,
+          "total_tokens": 204854,
+          "tokens_per_successful_query": 1365.6933333333334,
+          "total_tokens_successful": 204854
+        }
+      }
+    },
+    {
+      "name": "bm25_plain",
+      "recall@1": 0.9066666666666666,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.4,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.98,
+          "success_within_3": 0.9866666666666667,
+          "mean_tokens": 331.55333333333334,
+          "p95_tokens": 323.99999999999966,
+          "total_tokens": 49733,
+          "tokens_per_successful_query": 331.55333333333334,
+          "total_tokens_successful": 49733
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.2333333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.98,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9866666666666667,
+          "mean_tokens": 465.3,
+          "p95_tokens": 478.29999999999984,
+          "total_tokens": 69795,
+          "tokens_per_successful_query": 465.3,
+          "total_tokens_successful": 69795
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1066666666666667,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 803.7666666666667,
+          "p95_tokens": 989.2999999999995,
+          "total_tokens": 120565,
+          "tokens_per_successful_query": 803.7666666666667,
+          "total_tokens_successful": 120565
+        }
+      }
+    },
+    {
+      "name": "bm25_tfidf_hybrid",
+      "recall@1": 0.82,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.3466666666666667,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 318.5933333333333,
+          "p95_tokens": 336.9499999999998,
+          "total_tokens": 47789,
+          "tokens_per_successful_query": 318.5933333333333,
+          "total_tokens_successful": 47789
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1933333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 450.04,
+          "p95_tokens": 485.99999999999966,
+          "total_tokens": 67506,
+          "tokens_per_successful_query": 450.04,
+          "total_tokens_successful": 67506
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0933333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 812.5,
+          "p95_tokens": 962.0,
+          "total_tokens": 121875,
+          "tokens_per_successful_query": 812.5,
+          "total_tokens_successful": 121875
+        }
+      }
+    },
+    {
+      "name": "bm25_weighted",
+      "recall@1": 0.8533333333333334,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.04,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 242.9,
+          "p95_tokens": 349.7499999999999,
+          "total_tokens": 36435,
+          "tokens_per_successful_query": 242.9,
+          "total_tokens_successful": 36435
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 1.0,
+          "mean_tokens": 382.8466666666667,
+          "p95_tokens": 521.1999999999999,
+          "total_tokens": 57427,
+          "tokens_per_successful_query": 382.8466666666667,
+          "total_tokens_successful": 57427
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0066666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 733.46,
+          "p95_tokens": 952.75,
+          "total_tokens": 110019,
+          "tokens_per_successful_query": 733.46,
+          "total_tokens_successful": 110019
+        }
+      }
+    },
+    {
+      "name": "boolean_and",
+      "recall@1": 0.7666666666666667,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 10.733333333333333,
+          "p95_calls": 59.749999999999915,
+          "success_within_1": 0.7733333333333333,
+          "success_within_2": 0.7733333333333333,
+          "success_within_3": 0.7733333333333333,
+          "mean_tokens": 2656.4733333333334,
+          "p95_tokens": 14505.499999999985,
+          "total_tokens": 398471,
+          "tokens_per_successful_query": 2656.4733333333334,
+          "total_tokens_successful": 398471
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 6.793333333333333,
+          "p95_calls": 35.64999999999995,
+          "success_within_1": 0.7733333333333333,
+          "success_within_2": 0.7733333333333333,
+          "success_within_3": 0.7733333333333333,
+          "mean_tokens": 2707.62,
+          "p95_tokens": 13944.199999999986,
+          "total_tokens": 406143,
+          "tokens_per_successful_query": 2707.62,
+          "total_tokens_successful": 406143
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 3.84,
+          "p95_calls": 18.099999999999966,
+          "success_within_1": 0.7733333333333333,
+          "success_within_2": 0.78,
+          "success_within_3": 0.78,
+          "mean_tokens": 3003.58,
+          "p95_tokens": 13725.299999999981,
+          "total_tokens": 450537,
+          "tokens_per_successful_query": 3003.58,
+          "total_tokens_successful": 450537
+        }
+      }
+    },
+    {
+      "name": "boolean_or",
+      "recall@1": 0.9466666666666667,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.2,
+          "p95_calls": 1.0,
+          "success_within_1": 0.98,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 309.12666666666667,
+          "p95_tokens": 392.8499999999999,
+          "total_tokens": 46369,
+          "tokens_per_successful_query": 309.12666666666667,
+          "total_tokens_successful": 46369
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1066666666666667,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 464.8933333333333,
+          "p95_tokens": 600.55,
+          "total_tokens": 69734,
+          "tokens_per_successful_query": 464.8933333333333,
+          "total_tokens_successful": 69734
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0533333333333332,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 875.54,
+          "p95_tokens": 1188.2,
+          "total_tokens": 131331,
+          "tokens_per_successful_query": 875.54,
+          "total_tokens_successful": 131331
+        }
+      }
+    },
+    {
+      "name": "char_trigram",
+      "recall@1": 0.8533333333333334,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.54,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9666666666666667,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9866666666666667,
+          "mean_tokens": 368.2,
+          "p95_tokens": 329.7499999999999,
+          "total_tokens": 55230,
+          "tokens_per_successful_query": 368.2,
+          "total_tokens_successful": 55230
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.32,
+          "p95_calls": 1.0,
+          "success_within_1": 0.98,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9866666666666667,
+          "mean_tokens": 503.08,
+          "p95_tokens": 500.9499999999998,
+          "total_tokens": 75462,
+          "tokens_per_successful_query": 503.08,
+          "total_tokens_successful": 75462
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1533333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9866666666666667,
+          "mean_tokens": 850.7866666666666,
+          "p95_tokens": 994.0999999999997,
+          "total_tokens": 127618,
+          "tokens_per_successful_query": 850.7866666666666,
+          "total_tokens_successful": 127618
+        }
+      }
+    },
+    {
+      "name": "codedb_find",
+      "recall@1": 0.4866666666666667,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 28.313333333333333,
+          "p95_calls": 101.19999999999993,
+          "success_within_1": 0.5066666666666667,
+          "success_within_2": 0.5066666666666667,
+          "success_within_3": 0.5133333333333333,
+          "mean_tokens": 6934.52,
+          "p95_tokens": 24072.999999999985,
+          "total_tokens": 1040178,
+          "tokens_per_successful_query": 6934.52,
+          "total_tokens_successful": 1040178
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 17.26,
+          "p95_calls": 61.099999999999966,
+          "success_within_1": 0.5066666666666667,
+          "success_within_2": 0.52,
+          "success_within_3": 0.52,
+          "mean_tokens": 6801.473333333333,
+          "p95_tokens": 23343.44999999999,
+          "total_tokens": 1020221,
+          "tokens_per_successful_query": 6801.473333333333,
+          "total_tokens_successful": 1020221
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 9.013333333333334,
+          "p95_calls": 30.549999999999983,
+          "success_within_1": 0.52,
+          "success_within_2": 0.5266666666666666,
+          "success_within_3": 0.5333333333333333,
+          "mean_tokens": 6907.233333333334,
+          "p95_tokens": 22689.29999999999,
+          "total_tokens": 1036085,
+          "tokens_per_successful_query": 6907.233333333334,
+          "total_tokens_successful": 1036085
+        }
+      }
+    },
+    {
+      "name": "codedb_search",
+      "recall@1": 0.9133333333333333,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.6333333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.96,
+          "success_within_2": 0.9733333333333334,
+          "success_within_3": 0.9733333333333334,
+          "mean_tokens": 399.6333333333333,
+          "p95_tokens": 353.1499999999994,
+          "total_tokens": 59945,
+          "tokens_per_successful_query": 399.6333333333333,
+          "total_tokens_successful": 59945
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.3733333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9666666666666667,
+          "success_within_2": 0.9733333333333334,
+          "success_within_3": 0.9733333333333334,
+          "mean_tokens": 529.34,
+          "p95_tokens": 572.9999999999997,
+          "total_tokens": 79401,
+          "tokens_per_successful_query": 529.34,
+          "total_tokens_successful": 79401
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1733333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9733333333333334,
+          "success_within_3": 0.9866666666666667,
+          "mean_tokens": 844.0266666666666,
+          "p95_tokens": 1107.3999999999999,
+          "total_tokens": 126604,
+          "tokens_per_successful_query": 844.0266666666666,
+          "total_tokens_successful": 126604
+        }
+      }
+    },
+    {
+      "name": "codedb_symbol",
+      "recall@1": 0.30666666666666664,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 15.006666666666666,
+          "p95_calls": 85.64999999999995,
+          "success_within_1": 0.5333333333333333,
+          "success_within_2": 0.62,
+          "success_within_3": 0.7,
+          "mean_tokens": 3683.14,
+          "p95_tokens": 20395.54999999999,
+          "total_tokens": 552471,
+          "tokens_per_successful_query": 3683.14,
+          "total_tokens_successful": 552471
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 9.293333333333333,
+          "p95_calls": 52.099999999999966,
+          "success_within_1": 0.6133333333333333,
+          "success_within_2": 0.7266666666666667,
+          "success_within_3": 0.7333333333333333,
+          "mean_tokens": 3667.9533333333334,
+          "p95_tokens": 20001.049999999985,
+          "total_tokens": 550193,
+          "tokens_per_successful_query": 3667.9533333333334,
+          "total_tokens_successful": 550193
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 5.026666666666666,
+          "p95_calls": 26.549999999999983,
+          "success_within_1": 0.7266666666666667,
+          "success_within_2": 0.7333333333333333,
+          "success_within_3": 0.74,
+          "mean_tokens": 3850.9733333333334,
+          "p95_tokens": 19869.449999999983,
+          "total_tokens": 577646,
+          "tokens_per_successful_query": 3850.9733333333334,
+          "total_tokens_successful": 577646
+        }
+      }
+    },
+    {
+      "name": "codedb_trigram_tokens",
+      "recall@1": 0.6066666666666667,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 4.06,
+          "p95_calls": 30.099999999999966,
+          "success_within_1": 0.8066666666666666,
+          "success_within_2": 0.8733333333333333,
+          "success_within_3": 0.9066666666666666,
+          "mean_tokens": 1007.1266666666667,
+          "p95_tokens": 8226.999999999993,
+          "total_tokens": 151069,
+          "tokens_per_successful_query": 1007.1266666666667,
+          "total_tokens_successful": 151069
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 2.78,
+          "p95_calls": 18.549999999999983,
+          "success_within_1": 0.8533333333333334,
+          "success_within_2": 0.9266666666666666,
+          "success_within_3": 0.9266666666666666,
+          "mean_tokens": 1088.7933333333333,
+          "p95_tokens": 8117.249999999994,
+          "total_tokens": 163319,
+          "tokens_per_successful_query": 1088.7933333333333,
+          "total_tokens_successful": 163319
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.84,
+          "p95_calls": 9.549999999999983,
+          "success_within_1": 0.9266666666666666,
+          "success_within_2": 0.9266666666666666,
+          "success_within_3": 0.9266666666666666,
+          "mean_tokens": 1371.1666666666667,
+          "p95_tokens": 8033.29999999999,
+          "total_tokens": 205675,
+          "tokens_per_successful_query": 1371.1666666666667,
+          "total_tokens_successful": 205675
+        }
+      }
+    },
+    {
+      "name": "codedb_word",
+      "recall@1": 0.6733333333333333,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 2.506666666666667,
+          "p95_calls": 3.0,
+          "success_within_1": 0.8733333333333333,
+          "success_within_2": 0.9333333333333333,
+          "success_within_3": 0.9666666666666667,
+          "mean_tokens": 622.4733333333334,
+          "p95_tokens": 668.3999999999999,
+          "total_tokens": 93371,
+          "tokens_per_successful_query": 622.4733333333334,
+          "total_tokens_successful": 93371
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.8733333333333333,
+          "p95_calls": 2.0,
+          "success_within_1": 0.9133333333333333,
+          "success_within_2": 0.9666666666666667,
+          "success_within_3": 0.9666666666666667,
+          "mean_tokens": 748.3533333333334,
+          "p95_tokens": 839.0499999999998,
+          "total_tokens": 112253,
+          "tokens_per_successful_query": 748.3533333333334,
+          "total_tokens_successful": 112253
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.4,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9666666666666667,
+          "success_within_2": 0.9666666666666667,
+          "success_within_3": 0.9733333333333334,
+          "mean_tokens": 1083.8266666666666,
+          "p95_tokens": 1101.2999999999995,
+          "total_tokens": 162574,
+          "tokens_per_successful_query": 1083.8266666666666,
+          "total_tokens_successful": 162574
+        }
+      }
+    },
+    {
+      "name": "decision_heuristic",
+      "recall@1": 0.8533333333333334,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.04,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 242.9,
+          "p95_tokens": 349.7499999999999,
+          "total_tokens": 36435,
+          "tokens_per_successful_query": 242.9,
+          "total_tokens_successful": 36435
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 1.0,
+          "mean_tokens": 382.8466666666667,
+          "p95_tokens": 521.1999999999999,
+          "total_tokens": 57427,
+          "tokens_per_successful_query": 382.8466666666667,
+          "total_tokens_successful": 57427
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0066666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 733.46,
+          "p95_tokens": 952.75,
+          "total_tokens": 110019,
+          "tokens_per_successful_query": 733.46,
+          "total_tokens_successful": 110019
+        }
+      }
+    },
+    {
+      "name": "embed_bge_small",
+      "recall@1": 0.9266666666666666,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.08,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 253.48,
+          "p95_tokens": 315.65,
+          "total_tokens": 38022,
+          "tokens_per_successful_query": 253.48,
+          "total_tokens_successful": 38022
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0466666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 393.7,
+          "p95_tokens": 507.2999999999996,
+          "total_tokens": 59055,
+          "tokens_per_successful_query": 393.7,
+          "total_tokens_successful": 59055
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 751.1466666666666,
+          "p95_tokens": 979.1499999999992,
+          "total_tokens": 112672,
+          "tokens_per_successful_query": 751.1466666666666,
+          "total_tokens_successful": 112672
+        }
+      }
+    },
+    {
+      "name": "hashed_ngram_embed",
+      "recall@1": 0.84,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0333333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9666666666666667,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 240.9,
+          "p95_tokens": 340.2999999999999,
+          "total_tokens": 36135,
+          "tokens_per_successful_query": 240.9,
+          "total_tokens_successful": 36135
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0066666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 380.88,
+          "p95_tokens": 509.0,
+          "total_tokens": 57132,
+          "tokens_per_successful_query": 380.88,
+          "total_tokens_successful": 57132
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0,
+          "p95_calls": 1.0,
+          "success_within_1": 1.0,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 756.0866666666667,
+          "p95_tokens": 941.65,
+          "total_tokens": 113413,
+          "tokens_per_successful_query": 756.0866666666667,
+          "total_tokens_successful": 113413
+        }
+      }
+    },
+    {
+      "name": "hybrid_codedb_embed",
+      "recall@1": 0.9333333333333333,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0866666666666667,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 252.98666666666668,
+          "p95_tokens": 345.54999999999995,
+          "total_tokens": 37948,
+          "tokens_per_successful_query": 252.98666666666668,
+          "total_tokens_successful": 37948
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0466666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 393.0466666666667,
+          "p95_tokens": 538.1999999999999,
+          "total_tokens": 58957,
+          "tokens_per_successful_query": 393.0466666666667,
+          "total_tokens_successful": 58957
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 729.4866666666667,
+          "p95_tokens": 979.3999999999999,
+          "total_tokens": 109423,
+          "tokens_per_successful_query": 729.4866666666667,
+          "total_tokens_successful": 109423
+        }
+      }
+    },
+    {
+      "name": "hybrid_codedb_trigram_bm25",
+      "recall@1": 0.7066666666666667,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.16,
+          "p95_calls": 2.0,
+          "success_within_1": 0.9,
+          "success_within_2": 0.9533333333333334,
+          "success_within_3": 0.9866666666666667,
+          "mean_tokens": 268.26666666666665,
+          "p95_tokens": 577.2999999999993,
+          "total_tokens": 40240,
+          "tokens_per_successful_query": 268.26666666666665,
+          "total_tokens_successful": 40240
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0533333333333332,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9533333333333334,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 1.0,
+          "mean_tokens": 384.94,
+          "p95_tokens": 587.1999999999979,
+          "total_tokens": 57741,
+          "tokens_per_successful_query": 384.94,
+          "total_tokens_successful": 57741
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0066666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 715.54,
+          "p95_tokens": 946.6999999999991,
+          "total_tokens": 107331,
+          "tokens_per_successful_query": 715.54,
+          "total_tokens_successful": 107331
+        }
+      }
+    },
+    {
+      "name": "hybrid_codedb_weighted_bm25",
+      "recall@1": 0.9333333333333333,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0133333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 236.3,
+          "p95_tokens": 336.8499999999999,
+          "total_tokens": 35445,
+          "tokens_per_successful_query": 236.3,
+          "total_tokens_successful": 35445
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0066666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 372.78,
+          "p95_tokens": 522.5999999999991,
+          "total_tokens": 55917,
+          "tokens_per_successful_query": 372.78,
+          "total_tokens_successful": 55917
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0,
+          "p95_calls": 1.0,
+          "success_within_1": 1.0,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 705.18,
+          "p95_tokens": 945.6999999999994,
+          "total_tokens": 105777,
+          "tokens_per_successful_query": 705.18,
+          "total_tokens_successful": 105777
+        }
+      }
+    },
+    {
+      "name": "hybrid_rrf_bm25_embed",
+      "recall@1": 0.9333333333333333,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0866666666666667,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 250.80666666666667,
+          "p95_tokens": 322.3499999999997,
+          "total_tokens": 37621,
+          "tokens_per_successful_query": 250.80666666666667,
+          "total_tokens_successful": 37621
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0466666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 389.6066666666667,
+          "p95_tokens": 535.55,
+          "total_tokens": 58441,
+          "tokens_per_successful_query": 389.6066666666667,
+          "total_tokens_successful": 58441
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 736.7133333333334,
+          "p95_tokens": 995.7999999999994,
+          "total_tokens": 110507,
+          "tokens_per_successful_query": 736.7133333333334,
+          "total_tokens_successful": 110507
+        }
+      }
+    },
+    {
+      "name": "hybrid_rrf_bm25_trigram",
+      "recall@1": 0.92,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.34,
+          "p95_calls": 1.0,
+          "success_within_1": 0.98,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 314.38,
+          "p95_tokens": 332.54999999999995,
+          "total_tokens": 47157,
+          "tokens_per_successful_query": 314.38,
+          "total_tokens_successful": 47157
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.2,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 446.9266666666667,
+          "p95_tokens": 517.9499999999998,
+          "total_tokens": 67039,
+          "tokens_per_successful_query": 446.9266666666667,
+          "total_tokens_successful": 67039
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0933333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 784.1466666666666,
+          "p95_tokens": 984.9999999999993,
+          "total_tokens": 117622,
+          "tokens_per_successful_query": 784.1466666666666,
+          "total_tokens_successful": 117622
+        }
+      }
+    },
+    {
+      "name": "hybrid_rrf_trigram_embed",
+      "recall@1": 0.9,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 253.88,
+          "p95_tokens": 328.65,
+          "total_tokens": 38082,
+          "tokens_per_successful_query": 253.88,
+          "total_tokens_successful": 38082
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0466666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 388.06,
+          "p95_tokens": 489.04999999999984,
+          "total_tokens": 58209,
+          "tokens_per_successful_query": 388.06,
+          "total_tokens_successful": 58209
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 745.4866666666667,
+          "p95_tokens": 970.1499999999997,
+          "total_tokens": 111823,
+          "tokens_per_successful_query": 745.4866666666667,
+          "total_tokens_successful": 111823
+        }
+      }
+    },
+    {
+      "name": "hybrid_rrf_weighted_embed",
+      "recall@1": 0.8866666666666667,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.08,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 255.36,
+          "p95_tokens": 317.9499999999998,
+          "total_tokens": 38304,
+          "tokens_per_successful_query": 255.36,
+          "total_tokens_successful": 38304
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0466666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 397.26,
+          "p95_tokens": 492.3499999999997,
+          "total_tokens": 59589,
+          "tokens_per_successful_query": 397.26,
+          "total_tokens_successful": 59589
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 758.62,
+          "p95_tokens": 1008.0499999999997,
+          "total_tokens": 113793,
+          "tokens_per_successful_query": 758.62,
+          "total_tokens_successful": 113793
+        }
+      }
+    },
+    {
+      "name": "hybrid_rrf_weighted_hashed",
+      "recall@1": 0.86,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0133333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 239.23333333333332,
+          "p95_tokens": 324.7999999999997,
+          "total_tokens": 35885,
+          "tokens_per_successful_query": 239.23333333333332,
+          "total_tokens_successful": 35885
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0066666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 379.00666666666666,
+          "p95_tokens": 511.49999999999983,
+          "total_tokens": 56851,
+          "tokens_per_successful_query": 379.00666666666666,
+          "total_tokens_successful": 56851
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0,
+          "p95_calls": 1.0,
+          "success_within_1": 1.0,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 754.9066666666666,
+          "p95_tokens": 1007.7999999999994,
+          "total_tokens": 113236,
+          "tokens_per_successful_query": 754.9066666666666,
+          "total_tokens_successful": 113236
+        }
+      }
+    },
+    {
+      "name": "hybrid_rrf_weighted_trigram",
+      "recall@1": 0.86,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.02,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 1.0,
+          "mean_tokens": 236.66666666666666,
+          "p95_tokens": 333.0,
+          "total_tokens": 35500,
+          "tokens_per_successful_query": 236.66666666666666,
+          "total_tokens_successful": 35500
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0066666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 376.52,
+          "p95_tokens": 516.5999999999998,
+          "total_tokens": 56478,
+          "tokens_per_successful_query": 376.52,
+          "total_tokens_successful": 56478
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0,
+          "p95_calls": 1.0,
+          "success_within_1": 1.0,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 740.5866666666667,
+          "p95_tokens": 1001.1999999999999,
+          "total_tokens": 111088,
+          "tokens_per_successful_query": 740.5866666666667,
+          "total_tokens_successful": 111088
+        }
+      }
+    },
+    {
+      "name": "lexical_rerank_weighted_top20",
+      "recall@1": 0.88,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0266666666666666,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 240.99333333333334,
+          "p95_tokens": 372.9499999999998,
+          "total_tokens": 36149,
+          "tokens_per_successful_query": 240.99333333333334,
+          "total_tokens_successful": 36149
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0133333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 380.41333333333336,
+          "p95_tokens": 510.89999999999975,
+          "total_tokens": 57062,
+          "tokens_per_successful_query": 380.41333333333336,
+          "total_tokens_successful": 57062
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0,
+          "p95_calls": 1.0,
+          "success_within_1": 1.0,
+          "success_within_2": 1.0,
+          "success_within_3": 1.0,
+          "mean_tokens": 730.9933333333333,
+          "p95_tokens": 959.9499999999998,
+          "total_tokens": 109649,
+          "tokens_per_successful_query": 730.9933333333333,
+          "total_tokens_successful": 109649
+        }
+      }
+    },
+    {
+      "name": "name_exact_substr",
+      "recall@1": 0.0,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 63.74666666666667,
+          "p95_calls": 116.54999999999998,
+          "success_within_1": 0.006666666666666667,
+          "success_within_2": 0.006666666666666667,
+          "success_within_3": 0.013333333333333334,
+          "mean_tokens": 15418.586666666666,
+          "p95_tokens": 27301.65,
+          "total_tokens": 2312788,
+          "tokens_per_successful_query": 15418.586666666666,
+          "total_tokens_successful": 2312788
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 38.48,
+          "p95_calls": 70.0,
+          "success_within_1": 0.006666666666666667,
+          "success_within_2": 0.013333333333333334,
+          "success_within_3": 0.02,
+          "mean_tokens": 14978.92,
+          "p95_tokens": 26505.0,
+          "total_tokens": 2246838,
+          "tokens_per_successful_query": 14978.92,
+          "total_tokens_successful": 2246838
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 19.486666666666668,
+          "p95_calls": 35.0,
+          "success_within_1": 0.013333333333333334,
+          "success_within_2": 0.04,
+          "success_within_3": 0.07333333333333333,
+          "mean_tokens": 14759.053333333333,
+          "p95_tokens": 25789.25,
+          "total_tokens": 2213858,
+          "tokens_per_successful_query": 14759.053333333333,
+          "total_tokens_successful": 2213858
+        }
+      }
+    },
+    {
+      "name": "query_rewrite_weighted_bm25",
+      "recall@1": 0.8333333333333334,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1066666666666667,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9533333333333334,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 261.14,
+          "p95_tokens": 389.09999999999997,
+          "total_tokens": 39171,
+          "tokens_per_successful_query": 261.14,
+          "total_tokens_successful": 39171
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0533333333333332,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 398.81333333333333,
+          "p95_tokens": 565.7999999999997,
+          "total_tokens": 59822,
+          "tokens_per_successful_query": 398.81333333333333,
+          "total_tokens_successful": 59822
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0133333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 1.0,
+          "mean_tokens": 749.76,
+          "p95_tokens": 987.9499999999989,
+          "total_tokens": 112464,
+          "tokens_per_successful_query": 749.76,
+          "total_tokens_successful": 112464
+        }
+      }
+    },
+    {
+      "name": "tfidf",
+      "recall@1": 0.8,
+      "by_k": {
+        "3": {
+          "k": 3,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.3466666666666667,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9733333333333334,
+          "success_within_2": 0.9866666666666667,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 318.52666666666664,
+          "p95_tokens": 314.54999999999995,
+          "total_tokens": 47779,
+          "tokens_per_successful_query": 318.52666666666664,
+          "total_tokens_successful": 47779
+        },
+        "5": {
+          "k": 5,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.1933333333333334,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9866666666666667,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 449.36,
+          "p95_tokens": 471.09999999999997,
+          "total_tokens": 67404,
+          "tokens_per_successful_query": 449.36,
+          "total_tokens_successful": 67404
+        },
+        "10": {
+          "k": 10,
+          "n": 150,
+          "n_found": 150,
+          "mean_calls": 1.0933333333333333,
+          "p95_calls": 1.0,
+          "success_within_1": 0.9933333333333333,
+          "success_within_2": 0.9933333333333333,
+          "success_within_3": 0.9933333333333333,
+          "mean_tokens": 812.9933333333333,
+          "p95_tokens": 954.2999999999998,
+          "total_tokens": 121949,
+          "tokens_per_successful_query": 812.9933333333333,
+          "total_tokens_successful": 121949
+        }
+      }
+    }
+  ],
+  "ranking_by_tokens_per_success_k5": [
+    {
+      "cost_rank": 1,
+      "recall_rank": 3,
+      "name": "hybrid_codedb_weighted_bm25",
+      "recall@1": 0.9333333333333333,
+      "k5_tokens_per_success": 372.78,
+      "k5_mean_calls": 1.0066666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": 2
+    },
+    {
+      "cost_rank": 2,
+      "recall_rank": 14,
+      "name": "hybrid_rrf_weighted_trigram",
+      "recall@1": 0.86,
+      "k5_tokens_per_success": 376.52,
+      "k5_mean_calls": 1.0066666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": 12
+    },
+    {
+      "cost_rank": 3,
+      "recall_rank": 13,
+      "name": "hybrid_rrf_weighted_hashed",
+      "recall@1": 0.86,
+      "k5_tokens_per_success": 379.00666666666666,
+      "k5_mean_calls": 1.0066666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": 10
+    },
+    {
+      "cost_rank": 4,
+      "recall_rank": 12,
+      "name": "lexical_rerank_weighted_top20",
+      "recall@1": 0.88,
+      "k5_tokens_per_success": 380.41333333333336,
+      "k5_mean_calls": 1.0133333333333334,
+      "k5_success_within_1": 0.9866666666666667,
+      "rank_diff": 8
+    },
+    {
+      "cost_rank": 5,
+      "recall_rank": 18,
+      "name": "hashed_ngram_embed",
+      "recall@1": 0.84,
+      "k5_tokens_per_success": 380.88,
+      "k5_mean_calls": 1.0066666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": 13
+    },
+    {
+      "cost_rank": 6,
+      "recall_rank": 15,
+      "name": "bm25_weighted",
+      "recall@1": 0.8533333333333334,
+      "k5_tokens_per_success": 382.8466666666667,
+      "k5_mean_calls": 1.02,
+      "k5_success_within_1": 0.9866666666666667,
+      "rank_diff": 9
+    },
+    {
+      "cost_rank": 7,
+      "recall_rank": 17,
+      "name": "decision_heuristic",
+      "recall@1": 0.8533333333333334,
+      "k5_tokens_per_success": 382.8466666666667,
+      "k5_mean_calls": 1.02,
+      "k5_success_within_1": 0.9866666666666667,
+      "rank_diff": 10
+    },
+    {
+      "cost_rank": 8,
+      "recall_rank": 25,
+      "name": "hybrid_codedb_trigram_bm25",
+      "recall@1": 0.7066666666666667,
+      "k5_tokens_per_success": 384.94,
+      "k5_mean_calls": 1.0533333333333332,
+      "k5_success_within_1": 0.9533333333333334,
+      "rank_diff": 17
+    },
+    {
+      "cost_rank": 9,
+      "recall_rank": 10,
+      "name": "hybrid_rrf_trigram_embed",
+      "recall@1": 0.9,
+      "k5_tokens_per_success": 388.06,
+      "k5_mean_calls": 1.0466666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": 1
+    },
+    {
+      "cost_rank": 10,
+      "recall_rank": 4,
+      "name": "hybrid_rrf_bm25_embed",
+      "recall@1": 0.9333333333333333,
+      "k5_tokens_per_success": 389.6066666666667,
+      "k5_mean_calls": 1.0466666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": -6
+    },
+    {
+      "cost_rank": 11,
+      "recall_rank": 2,
+      "name": "hybrid_codedb_embed",
+      "recall@1": 0.9333333333333333,
+      "k5_tokens_per_success": 393.0466666666667,
+      "k5_mean_calls": 1.0466666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": -9
+    },
+    {
+      "cost_rank": 12,
+      "recall_rank": 5,
+      "name": "embed_bge_small",
+      "recall@1": 0.9266666666666666,
+      "k5_tokens_per_success": 393.7,
+      "k5_mean_calls": 1.0466666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": -7
+    },
+    {
+      "cost_rank": 13,
+      "recall_rank": 11,
+      "name": "hybrid_rrf_weighted_embed",
+      "recall@1": 0.8866666666666667,
+      "k5_tokens_per_success": 397.26,
+      "k5_mean_calls": 1.0466666666666666,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": -2
+    },
+    {
+      "cost_rank": 14,
+      "recall_rank": 19,
+      "name": "query_rewrite_weighted_bm25",
+      "recall@1": 0.8333333333333334,
+      "k5_tokens_per_success": 398.81333333333333,
+      "k5_mean_calls": 1.0533333333333332,
+      "k5_success_within_1": 0.9733333333333334,
+      "rank_diff": 5
+    },
+    {
+      "cost_rank": 15,
+      "recall_rank": 6,
+      "name": "hybrid_rrf_bm25_trigram",
+      "recall@1": 0.92,
+      "k5_tokens_per_success": 446.9266666666667,
+      "k5_mean_calls": 1.2,
+      "k5_success_within_1": 0.9866666666666667,
+      "rank_diff": -9
+    },
+    {
+      "cost_rank": 16,
+      "recall_rank": 23,
+      "name": "tfidf",
+      "recall@1": 0.8,
+      "k5_tokens_per_success": 449.36,
+      "k5_mean_calls": 1.1933333333333334,
+      "k5_success_within_1": 0.9866666666666667,
+      "rank_diff": 7
+    },
+    {
+      "cost_rank": 17,
+      "recall_rank": 22,
+      "name": "bm25_tfidf_hybrid",
+      "recall@1": 0.82,
+      "k5_tokens_per_success": 450.04,
+      "k5_mean_calls": 1.1933333333333334,
+      "k5_success_within_1": 0.9866666666666667,
+      "rank_diff": 5
+    },
+    {
+      "cost_rank": 18,
+      "recall_rank": 8,
+      "name": "bm25_ident_split",
+      "recall@1": 0.9066666666666666,
+      "k5_tokens_per_success": 452.35333333333335,
+      "k5_mean_calls": 1.2,
+      "k5_success_within_1": 0.9866666666666667,
+      "rank_diff": -10
+    },
+    {
+      "cost_rank": 19,
+      "recall_rank": 1,
+      "name": "boolean_or",
+      "recall@1": 0.9466666666666667,
+      "k5_tokens_per_success": 464.8933333333333,
+      "k5_mean_calls": 1.1066666666666667,
+      "k5_success_within_1": 0.9933333333333333,
+      "rank_diff": -18
+    },
+    {
+      "cost_rank": 20,
+      "recall_rank": 9,
+      "name": "bm25_plain",
+      "recall@1": 0.9066666666666666,
+      "k5_tokens_per_success": 465.3,
+      "k5_mean_calls": 1.2333333333333334,
+      "k5_success_within_1": 0.98,
+      "rank_diff": -11
+    },
+    {
+      "cost_rank": 21,
+      "recall_rank": 16,
+      "name": "char_trigram",
+      "recall@1": 0.8533333333333334,
+      "k5_tokens_per_success": 503.08,
+      "k5_mean_calls": 1.32,
+      "k5_success_within_1": 0.98,
+      "rank_diff": -5
+    },
+    {
+      "cost_rank": 22,
+      "recall_rank": 7,
+      "name": "codedb_search",
+      "recall@1": 0.9133333333333333,
+      "k5_tokens_per_success": 529.34,
+      "k5_mean_calls": 1.3733333333333333,
+      "k5_success_within_1": 0.9666666666666667,
+      "rank_diff": -15
+    },
+    {
+      "cost_rank": 23,
+      "recall_rank": 20,
+      "name": "bm25_desc_only",
+      "recall@1": 0.8266666666666667,
+      "k5_tokens_per_success": 597.2933333333333,
+      "k5_mean_calls": 1.52,
+      "k5_success_within_1": 0.96,
+      "rank_diff": -3
+    },
+    {
+      "cost_rank": 24,
+      "recall_rank": 26,
+      "name": "codedb_word",
+      "recall@1": 0.6733333333333333,
+      "k5_tokens_per_success": 748.3533333333334,
+      "k5_mean_calls": 1.8733333333333333,
+      "k5_success_within_1": 0.9133333333333333,
+      "rank_diff": 2
+    },
+    {
+      "cost_rank": 25,
+      "recall_rank": 21,
+      "name": "bm25_name_only",
+      "recall@1": 0.82,
+      "k5_tokens_per_success": 1035.96,
+      "k5_mean_calls": 2.6333333333333333,
+      "k5_success_within_1": 0.9266666666666666,
+      "rank_diff": -4
+    },
+    {
+      "cost_rank": 26,
+      "recall_rank": 27,
+      "name": "codedb_trigram_tokens",
+      "recall@1": 0.6066666666666667,
+      "k5_tokens_per_success": 1088.7933333333333,
+      "k5_mean_calls": 2.78,
+      "k5_success_within_1": 0.8533333333333334,
+      "rank_diff": 1
+    },
+    {
+      "cost_rank": 27,
+      "recall_rank": 24,
+      "name": "boolean_and",
+      "recall@1": 0.7666666666666667,
+      "k5_tokens_per_success": 2707.62,
+      "k5_mean_calls": 6.793333333333333,
+      "k5_success_within_1": 0.7733333333333333,
+      "rank_diff": -3
+    },
+    {
+      "cost_rank": 28,
+      "recall_rank": 29,
+      "name": "codedb_symbol",
+      "recall@1": 0.30666666666666664,
+      "k5_tokens_per_success": 3667.9533333333334,
+      "k5_mean_calls": 9.293333333333333,
+      "k5_success_within_1": 0.6133333333333333,
+      "rank_diff": 1
+    },
+    {
+      "cost_rank": 29,
+      "recall_rank": 28,
+      "name": "codedb_find",
+      "recall@1": 0.4866666666666667,
+      "k5_tokens_per_success": 6801.473333333333,
+      "k5_mean_calls": 17.26,
+      "k5_success_within_1": 0.5066666666666667,
+      "rank_diff": -1
+    },
+    {
+      "cost_rank": 30,
+      "recall_rank": 30,
+      "name": "name_exact_substr",
+      "recall@1": 0.0,
+      "k5_tokens_per_success": 14978.92,
+      "k5_mean_calls": 38.48,
+      "k5_success_within_1": 0.006666666666666667,
+      "rank_diff": 0
+    }
+  ],
+  "model": "Deterministic offset paging of the saved ranking. Call n returns ranks[(n-1)k : n k] as full MCP tool schemas. Stops when any gold/alt appears. Tools not in the saved top-10 are appended in catalog order (pessimistic tail for misses)."
+}
