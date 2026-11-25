@@ -32,6 +32,11 @@ class SemanticSafetyCommandsTests(unittest.TestCase):
         graph = '.name = "test-semantic-index",'
         self.assertEqual((), MODULE.semantic_safety_commands(graph, "base"))
 
+    def test_unpaired_base_worktree_skips_head_safety_roots(self) -> None:
+        graph = '.name = "test-semantic-index",'
+        other = pathlib.Path("/tmp/codedb-base-worktree")
+        self.assertEqual((), MODULE.semantic_safety_commands(graph, None, source_root=other))
+
 
 class WholeTreeComparatorTests(unittest.TestCase):
     def test_mismatched_corpus_is_diagnostic_not_a_latency_gate(self) -> None:
