@@ -20,10 +20,10 @@ fn page() h.Node {
         h.h1(.{ .class = "section-title" }, "Up and running in 60 seconds"),
 
         h.h2(.{}, "1. Install"),
-        h.p(.{}, "On macOS and Linux, the installer downloads a signed codedb binary. Client configs, hooks, and DeepWiki stay off unless you opt in:"),
+        h.p(.{}, "On macOS and Linux, the installer downloads a signed codedb binary and auto-registers detected MCP clients:"),
         h.pre(.{},
             \\curl -fsSL https://codedb.codegraff.com/install.sh | bash
-            \\# optional: CODEDB_INSTALL_CLIENTS=1 CODEDB_INSTALL_HOOKS=1
+            \\# opt out: CODEDB_INSTALL_CLIENTS=0 CODEDB_INSTALL_HOOKS=0 CODEDB_INSTALL_DEEPWIKI=0
         ),
         h.p(.{}, "On native Windows x86_64, run the signature-verifying installer in PowerShell:"),
         h.pre(.{},
@@ -32,7 +32,7 @@ fn page() h.Node {
         h.p(.{}, "Supports macOS (ARM64, x86_64), Linux (ARM64, x86_64), and Windows (x86_64). macOS ARM64 binaries are codesigned and notarized."),
 
         h.h2(.{}, "2. MCP server (recommended)"),
-        h.p(.{}, "Add codedb to your MCP client, or pass CODEDB_INSTALL_CLIENTS=1 to the installer. On Windows, configure the client with the absolute path to codedb.exe."),
+        h.p(.{}, "The shell installer registers detected clients automatically. On Windows, configure the client with the absolute path to codedb.exe. Then open a project and the MCP tools are available to your AI agent."),
         h.pre(.{},
             \\# MCP start
             \\codedb mcp /path/to/your/project

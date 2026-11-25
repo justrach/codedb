@@ -63,7 +63,7 @@ machine. See [Data & Privacy](#-data--privacy) for what each mode sends and stor
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
-Downloads the signed binary for your platform. Client MCP configs, Claude/Codex hooks, and DeepWiki are **off by default**. Opt in with `CODEDB_INSTALL_CLIENTS=1`, `CODEDB_INSTALL_HOOKS=1`, and/or `CODEDB_INSTALL_DEEPWIKI=1`. The installer will not create `~/.claude.json` unless Claude is already installed, and it never grants a blanket `mcp__codedb__*` allow. The installer prints the `codedb mcp` command to add yourself.
+Downloads the signed binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, **Devin**, **oh-my-pi**, **Hermes**, **Qwen Code**, **ZCode**, **Trae**, **Cline**, **Copilot CLI**, **Antigravity**, **Kiro**, and **OpenCode** — each written directly and additively into that tool's config (only when the tool is present). Opt out with `CODEDB_INSTALL_CLIENTS=0`, `CODEDB_INSTALL_HOOKS=0`, `CODEDB_INSTALL_DEEPWIKI=0`, or `CODEDB_NO_INTEGRATIONS=1`. The installer will not create `~/.claude.json` unless Claude is already installed. Claude Code permissions allow-list read-only codedb tools (never `codedb_index`, never a blanket `mcp__codedb__*` glob). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
 
 On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
 
@@ -261,11 +261,11 @@ env var is set.
 ### Public repos — DeepWiki (remote MCP)
 
 codedb indexes *your* checked-out code. For
-questions about *public* GitHub repos, opt in at install time with
-`CODEDB_INSTALL_DEEPWIKI=1` to register [DeepWiki](https://deepwiki.com)
-(`https://mcp.deepwiki.com/mcp` — free, no auth) as a separate remote MCP
-server in each detected client, with tools `read_wiki_structure`,
-`read_wiki_contents`, and `ask_question`. DeepWiki queries leave the machine.
+questions about *public* GitHub repos, the installer registers
+[DeepWiki](https://deepwiki.com) (`https://mcp.deepwiki.com/mcp` — free, no
+auth) as a separate remote MCP server in each detected client, with tools
+`read_wiki_structure`, `read_wiki_contents`, and `ask_question`. Opt out at
+install time with `CODEDB_INSTALL_DEEPWIKI=0`. DeepWiki queries leave the machine.
 (The old `codedb_remote` tool backed by api.wiki.codes was removed; DeepWiki
 replaces that role.)
 
@@ -291,7 +291,7 @@ replaces that role.)
 
 **Options:** `--no-telemetry` (telemetry is off by default; set `CODEDB_TELEMETRY=1` to opt in)
 
-**Claude Code hooks:** off unless you pass `CODEDB_INSTALL_HOOKS=1`. `CODEDB_NO_HOOKS=1` skips them even then. Client MCP configs and DeepWiki are also opt-in (`CODEDB_INSTALL_CLIENTS=1`, `CODEDB_INSTALL_DEEPWIKI=1`). The installer will not create `~/.claude.json` unless Claude is already installed.
+**Claude Code hook opt-out:** the installer registers a PreToolUse hook that nudges agents from `grep`/`cat` to codedb inside indexed repos. `CODEDB_NO_HOOKS=1` skips it for that run only. To make it permanent, run the installer with `CODEDB_PERSIST_NO_HOOKS=1` or `touch ~/.codedb/no-hooks`; `rm ~/.codedb/no-hooks` re-enables it. Skip the whole hook install with `CODEDB_INSTALL_HOOKS=0`. The installer will not create `~/.claude.json` unless Claude is already installed.
 
 ### Example: agent explores a codebase
 

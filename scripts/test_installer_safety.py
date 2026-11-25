@@ -35,7 +35,9 @@ def main():
     installer = ROOT / "install/install.sh"
     src = installer.read_text()
     assert "xattr -c" not in src
-    assert "mcp__codedb__*" not in src
+    assert 'allow.append("mcp__codedb__*")' not in src
+    assert '"codedb_index"' not in src
+    assert '"codedb_read"' in src
     assert "CODEDB_INSTALL_CLIENTS" in src
     assert "CODEDB_INSTALL_HOOKS" in src
     ps1 = (ROOT / "install/install.ps1").read_text()
@@ -52,7 +54,7 @@ def main():
         root = Path(directory)
         commands = root / "commands"
         commands.mkdir()
-        for command in ("mkdir", "mktemp", "awk", "rm", "mv", "chmod", "cat", "file"):
+        for command in ("mkdir", "mktemp", "awk", "rm", "mv", "chmod", "cat", "file", "dirname", "basename", "head", "sed", "grep"):
             resolved = shutil.which(command)
             if resolved:
                 (commands / command).symlink_to(resolved)
@@ -167,7 +169,7 @@ else:
             extra_path = ""
             if scenario in ("mismatch", "trailing-field"):
                 claude_config.write_text(existing_config)
-                extra = {"CODEDB_INSTALL_CLIENTS": "1", "CODEDB_INSTALL_DEEPWIKI": "0"}
+                extra = {"CODEDB_INSTALL_DEEPWIKI": "0"}
                 extra_path = os.pathsep + os.environ["PATH"]
             done = run_installer(scenario, target, fixture_home, extra_env=extra, extra_path=extra_path)
             success = scenario == "valid"
@@ -179,8 +181,14 @@ else:
                 assert claude_config.read_text() == existing_config, scenario
             else:
                 assert not claude_config.exists(), scenario
-            assert not (fixture_home / ".codex").exists(), scenario
             assert not (fixture_home / ".claude").exists(), scenario
+            if scenario == "valid":
+                # DeepWiki still writes Codex TOML (main). codedb itself is skipped.
+                codex_toml = (fixture_home / ".codex/config.toml").read_text()
+                assert "[mcp_servers.deepwiki]" in codex_toml
+                assert "[mcp_servers.codedb]" not in codex_toml
+            else:
+                assert not (fixture_home / ".codex").exists(), scenario
             print("PASS:", scenario)
 
         fixture_home = root / "fixture-user"
@@ -238,18 +246,53 @@ else:
         )
         assert done.returncode == 0, (done.stdout, done.stderr)
         assert binary.read_bytes() == payload
-        assert json.loads(claude_config.read_text())["mcpServers"]["other"]["command"] == "other-tool"
-        assert "codedb" not in json.loads(claude_config.read_text())["mcpServers"]
-        assert "codedb" not in tomllib.loads(codex_config.read_text()).get("mcp_servers", {})
-        assert not (fixture_home / ".claude/hooks/codedb-block-legacy.sh").exists()
-        print("PASS: default install does not write client configs or hooks")
+        configs = [
+            ("claude", json.loads(claude_config.read_text())["mcpServers"]),
+            ("codex", tomllib.loads(codex_config.read_text())["mcp_servers"]),
+            ("qwen detected client", json.loads(qwen_config.read_text())["mcpServers"]),
+        ]
+        for name, config in configs:
+            assert config["other"]["command"] == "other-tool"
+            assert config["codedb"]["command"] == str(binary)
+            assert config["codedb"]["args"] == ["mcp"]
+            print("PASS: default", name, "registration preserves other servers")
+        assert "deepwiki" in json.loads(claude_config.read_text())["mcpServers"]
+        print("PASS: default install registers DeepWiki")
+
+        settings = json.loads((fixture_home / ".claude/settings.json").read_text())
+        allow = settings.get("permissions", {}).get("allow", [])
+        assert "mcp__codedb__*" not in allow
+        assert "mcp__codedb__codedb_index" not in allow
+        assert "mcp__codedb__codedb_read" in allow
+        hook = fixture_home / ".claude/hooks/codedb-block-legacy.sh"
+        assert hook.is_file() and os.access(hook, os.X_OK)
+        assert any(
+            "codedb-block-legacy.sh" in entry["hooks"][0]["command"]
+            for entry in settings["hooks"]["PreToolUse"]
+        )
+        print("PASS: default install allow-lists read-only codedb tools")
+
+        settings["permissions"]["allow"].append("mcp__codedb__*")
+        (fixture_home / ".claude/settings.json").write_text(json.dumps(settings))
+        done = subprocess.run(
+            ["/bin/bash", str(installer)],
+            env=default_env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert done.returncode == 0, (done.stdout, done.stderr)
+        allow = json.loads((fixture_home / ".claude/settings.json").read_text())["permissions"]["allow"]
+        assert "mcp__codedb__*" not in allow
+        assert "mcp__codedb__codedb_index" not in allow
+        print("PASS: reinstall strips leftover mcp__codedb__* glob")
 
         empty_home = root / "empty-claude-home"
         empty_home.mkdir()
         empty_target = root / "empty-claude-install"
         empty_target.mkdir()
         empty_env = dict(default_env)
-        empty_env.update(HOME=str(empty_home), CODEDB_DIR=str(empty_target), CODEDB_INSTALL_CLIENTS="1")
+        empty_env.update(HOME=str(empty_home), CODEDB_DIR=str(empty_target))
         done = subprocess.run(
             ["/bin/bash", str(installer)],
             env=empty_env,
@@ -259,15 +302,18 @@ else:
         )
         assert done.returncode == 0, (done.stdout, done.stderr)
         assert not (empty_home / ".claude.json").exists()
-        assert not (empty_home / ".codex").exists()
-        print("PASS: INSTALL_CLIENTS does not create ~/.claude.json when Claude is absent")
+        assert not (empty_home / ".claude").exists()
+        empty_codex = (empty_home / ".codex/config.toml").read_text()
+        assert "[mcp_servers.deepwiki]" in empty_codex
+        assert "[mcp_servers.codedb]" not in empty_codex
+        print("PASS: default install does not create ~/.claude.json when Claude is absent")
 
         hooks_home = root / "hooks-only-home"
         hooks_home.mkdir()
         hooks_target = root / "hooks-only-install"
         hooks_target.mkdir()
         hooks_env = dict(default_env)
-        hooks_env.update(HOME=str(hooks_home), CODEDB_DIR=str(hooks_target), CODEDB_INSTALL_HOOKS="1")
+        hooks_env.update(HOME=str(hooks_home), CODEDB_DIR=str(hooks_target))
         done = subprocess.run(
             ["/bin/bash", str(installer)],
             env=hooks_env,
@@ -278,38 +324,36 @@ else:
         assert done.returncode == 0, (done.stdout, done.stderr)
         assert not (hooks_home / ".claude.json").exists()
         assert not (hooks_home / ".claude").exists()
-        print("PASS: INSTALL_HOOKS does not create ~/.claude when Claude is absent")
+        print("PASS: default install does not create ~/.claude when Claude is absent")
 
-        opt_env = dict(default_env)
-        opt_env.update(CODEDB_INSTALL_CLIENTS="1", CODEDB_INSTALL_HOOKS="1", CODEDB_INSTALL_DEEPWIKI="0")
+        optout_home = root / "optout-clients-home"
+        optout_home.mkdir()
+        (optout_home / ".claude.json").write_text(json.dumps({"mcpServers": {"other": {"command": "other-tool"}}}))
+        (optout_home / ".codex").mkdir()
+        (optout_home / ".codex/config.toml").write_text('[mcp_servers.other]\ncommand = "other-tool"\n')
+        optout_target = root / "optout-clients-install"
+        optout_target.mkdir()
+        optout_env = dict(default_env)
+        optout_env.update(
+            HOME=str(optout_home),
+            CODEDB_DIR=str(optout_target),
+            CODEDB_INSTALL_CLIENTS="0",
+            CODEDB_INSTALL_DEEPWIKI="0",
+            CODEDB_INSTALL_HOOKS="0",
+        )
         done = subprocess.run(
             ["/bin/bash", str(installer)],
-            env=opt_env,
+            env=optout_env,
             capture_output=True,
             text=True,
             timeout=20,
         )
         assert done.returncode == 0, (done.stdout, done.stderr)
-        configs = [
-            ("claude", json.loads(claude_config.read_text())["mcpServers"]),
-            ("codex", tomllib.loads(codex_config.read_text())["mcp_servers"]),
-            ("qwen detected client", json.loads(qwen_config.read_text())["mcpServers"]),
-        ]
-        for name, config in configs:
-            assert config["other"]["command"] == "other-tool"
-            assert config["codedb"]["command"] == str(binary)
-            assert config["codedb"]["args"] == ["mcp"]
-            print("PASS: opt-in", name, "registration preserves other servers")
+        assert "codedb" not in json.loads((optout_home / ".claude.json").read_text())["mcpServers"]
+        assert "codedb" not in tomllib.loads((optout_home / ".codex/config.toml").read_text()).get("mcp_servers", {})
+        assert not (optout_home / ".claude").exists()
+        print("PASS: CODEDB_INSTALL_CLIENTS=0 skips client configs, hooks, and DeepWiki")
 
-        settings = json.loads((fixture_home / ".claude/settings.json").read_text())
-        allow = settings.get("permissions", {}).get("allow", [])
-        assert "mcp__codedb__*" not in allow
-        hook = fixture_home / ".claude/hooks/codedb-block-legacy.sh"
-        assert hook.is_file() and os.access(hook, os.X_OK)
-        assert any(
-            "codedb-block-legacy.sh" in entry["hooks"][0]["command"]
-            for entry in settings["hooks"]["PreToolUse"]
-        )
         for command, expected in [
             ("sed -i s/old/new/ code.py", 0),
             ('awk "{print}" code.py', 0),
@@ -319,7 +363,7 @@ else:
             done = subprocess.run(
                 ["/bin/bash", str(hook)],
                 cwd=project,
-                env=opt_env,
+                env=default_env,
                 input=json.dumps({"tool_input": {"command": command}}),
                 capture_output=True,
                 text=True,

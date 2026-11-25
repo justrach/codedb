@@ -141,6 +141,13 @@ claude_is_installed() {
   command -v claude >/dev/null 2>&1 || [ -d "$HOME/.claude" ] || [ -f "$HOME/.claude.json" ]
 }
 
+_flag_enabled() {
+  case "${1:-1}" in
+    0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 register_claude() {
   local codedb_bin="$1"
   local config="$HOME/.claude.json"
@@ -590,8 +597,8 @@ register_deepwiki() {
   # local index. Registered additively alongside codedb; an existing "deepwiki"
   # entry is never overwritten. Set CODEDB_INSTALL_DEEPWIKI=0 to opt out.
   # Note: text sent to its tools (e.g. ask_question) leaves the machine.
-  if [ "${CODEDB_INSTALL_DEEPWIKI:-0}" != "1" ]; then
-    printf "  ${D}deepwiki:  skip (opt in with CODEDB_INSTALL_DEEPWIKI=1)${N}\n"
+  if ! _flag_enabled "${CODEDB_INSTALL_DEEPWIKI:-1}"; then
+    printf "  ${D}deepwiki:  skip (CODEDB_INSTALL_DEEPWIKI=0)${N}\n"
     return
   fi
   if ! command -v python3 >/dev/null 2>&1; then
@@ -599,9 +606,11 @@ register_deepwiki() {
     return
   fi
 
-  # Claude Code: always (mirrors register_claude). Field: type+url.
-  _register_deepwiki_json "$HOME/.claude.json" "claude code" \
-    "{\"type\":\"http\",\"url\":\"$DEEPWIKI_URL\"}"
+  # Claude Code: only when Claude is present. Do not create ~/.claude.json.
+  if claude_is_installed; then
+    _register_deepwiki_json "$HOME/.claude.json" "claude code" \
+      "{\"type\":\"http\",\"url\":\"$DEEPWIKI_URL\"}"
+  fi
   # Gemini CLI: streamable HTTP uses httpUrl.
   if [ -d "$HOME/.gemini" ]; then
     _register_deepwiki_json "$HOME/.gemini/settings.json" "gemini cli" \
@@ -842,8 +851,26 @@ if not skip_pretooluse:
         f.write("")
 merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
 
-# Never auto-allow codedb tools (especially codedb_index). Permissions stay
-# client-prompted unless the user grants them in the client UI.
+# Auto-allow read-only codedb MCP tools so callers aren't prompted for every
+# codedb_* call. Never allow codedb_index, and replace a leftover blanket
+# mcp__codedb__* glob from older installs.
+READONLY_TOOLS = (
+    "codedb_tree", "codedb_outline", "codedb_symbol", "codedb_search",
+    "codedb_word", "codedb_callers", "codedb_callpath", "codedb_explain",
+    "codedb_hot", "codedb_deps", "codedb_read", "codedb_changes",
+    "codedb_status", "codedb_snapshot", "codedb_bundle", "codedb_projects",
+    "codedb_find", "codedb_query", "codedb_glob", "codedb_ls",
+    "codedb_list_dir", "codedb_context",
+)
+perms = data.setdefault("permissions", {})
+allow = perms.setdefault("allow", [])
+if isinstance(allow, list):
+    while "mcp__codedb__*" in allow:
+        allow.remove("mcp__codedb__*")
+    for tool in READONLY_TOOLS:
+        rule = "mcp__codedb__" + tool
+        if rule not in allow:
+            allow.append(rule)
 with open(settings_path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -977,18 +1004,17 @@ main() {
 
   echo ""
   printf "  ${G}installed${N} ${D}→ $dest${N}\n"
-  printf "  ${D}client configs, hooks, and DeepWiki are off by default.${N}\n"
-  printf "  ${D}opt in: CODEDB_INSTALL_CLIENTS=1 CODEDB_INSTALL_HOOKS=1 CODEDB_INSTALL_DEEPWIKI=1${N}\n"
-  printf "  ${D}hooks also honor CODEDB_NO_HOOKS=1 / ~/.codedb/no-hooks${N}\n"
+  printf "  ${D}claude hook opt-out: CODEDB_NO_HOOKS=1 skips this run; CODEDB_PERSIST_NO_HOOKS=1 or touch ~/.codedb/no-hooks makes it permanent (rm ~/.codedb/no-hooks re-enables)${N}\n"
+  printf "  ${D}integrations opt-out: CODEDB_INSTALL_CLIENTS=0 CODEDB_INSTALL_HOOKS=0 CODEDB_INSTALL_DEEPWIKI=0 CODEDB_NO_INTEGRATIONS=1${N}\n"
 
-  # Register MCP server in coding tools only when explicitly opted in.
+  # Register MCP server in coding tools by default (opt out via env).
   echo ""
   if [ -n "${CODEDB_NO_INTEGRATIONS:-}" ]; then
     printf "  ${D}integrations skipped (CODEDB_NO_INTEGRATIONS)${N}\n"
-  elif [ "${CODEDB_INSTALL_CLIENTS:-0}" = "1" ] || [ "${CODEDB_INSTALL_HOOKS:-0}" = "1" ] || [ "${CODEDB_INSTALL_DEEPWIKI:-0}" = "1" ]; then
-    printf "  ${W}registering opted-in integrations${N}\n"
+  else
+    printf "  ${W}registering integrations${N}\n"
     echo ""
-    if [ "${CODEDB_INSTALL_CLIENTS:-0}" = "1" ]; then
+    if _flag_enabled "${CODEDB_INSTALL_CLIENTS:-1}"; then
       register_claude "$dest"
       register_codex "$dest"
       register_codex_policy "$dest"
@@ -997,20 +1023,18 @@ main() {
       register_windsurf_devin "$dest"
       register_detected_clients "$dest"
     else
-      printf "  ${D}client MCP configs skipped (set CODEDB_INSTALL_CLIENTS=1)${N}\n"
+      printf "  ${D}client MCP configs skipped (CODEDB_INSTALL_CLIENTS=0)${N}\n"
     fi
-    if [ "${CODEDB_INSTALL_DEEPWIKI:-0}" = "1" ]; then
+    if _flag_enabled "${CODEDB_INSTALL_DEEPWIKI:-1}"; then
       register_deepwiki
     else
-      printf "  ${D}deepwiki skipped (set CODEDB_INSTALL_DEEPWIKI=1)${N}\n"
+      printf "  ${D}deepwiki skipped (CODEDB_INSTALL_DEEPWIKI=0)${N}\n"
     fi
-    if [ "${CODEDB_INSTALL_HOOKS:-0}" = "1" ] && [ -z "${CODEDB_NO_HOOKS:-}" ]; then
+    if _flag_enabled "${CODEDB_INSTALL_HOOKS:-1}"; then
       register_hooks
     else
-      printf "  ${D}hooks skipped (set CODEDB_INSTALL_HOOKS=1; CODEDB_NO_HOOKS=1 always wins)${N}\n"
+      printf "  ${D}hooks skipped (CODEDB_INSTALL_HOOKS=0)${N}\n"
     fi
-  else
-    printf "  ${D}integrations skipped (opt in with CODEDB_INSTALL_CLIENTS=1 / CODEDB_INSTALL_HOOKS=1 / CODEDB_INSTALL_DEEPWIKI=1)${N}\n"
   fi
   print_hook_notes "$dest"
 
