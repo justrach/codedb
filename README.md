@@ -51,9 +51,9 @@ Graff, Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Devin, oh-my-pi, Hermes
 | “How does this request reach the database?” | Trace a chain between symbols with `codedb_callpath` |
 | “What's in this part of the repo?” | Browse with `codedb_list_dir` and inspect file outlines |
 
-Structural search runs locally. **Retrieval defaults to `semantic=local`**.
-Hybrid retrieval (`semantic=hybrid`) is an explicit opt-in that leaves the
-machine. See [Data & Privacy](#-data--privacy) for what each mode sends and stores.
+Structural search runs locally. **Default hybrid retrieval also uses hosted
+embeddings** (zero-data-retention); choose `semantic=local` for local-only retrieval. See
+[Data & Privacy](#-data--privacy) for what each mode sends and stores.
 
 ## ⚡ Install
 
@@ -227,7 +227,7 @@ Tools over the Model Context Protocol (JSON-RPC 2.0 over stdio). Agents see five
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
 | `codedb_explain` | Definition body + callers in one call (CLI aliases: `explain`, `around`) |
 | `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`); duplicate names list candidates—pass `from_path` / `to_path` (or CLI `--from-path` / `--to-path`) to select a file |
-| `codedb_context` | Task-shaped composer — local BM25/symbol retrieval by default. Pass `semantic=hybrid` to opt in to a hosted embedding request that leaves the machine (task + calibration, or a bounded exact rerank). `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
+| `codedb_context` | Task-shaped composer — Pareto-frontier hybrid retrieval by default: local BM25/symbol retrieval first, then local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient semantic rerank otherwise. Pass `semantic=local` for an on-device-only call. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Typed dependency graph: imports by default, or Markdown links with `edge_type=documents`; document traversal is capped at 2 hops / 64 files |
 | `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
@@ -483,10 +483,10 @@ contents, file paths, or search queries are collected** — only aggregate tool
 call counts, latency, and startup stats. `CODEDB_NO_TELEMETRY=1` and
 `--no-telemetry` force it off.
 
-`codedb_context` uses local BM25, trigram, symbol, and graph retrieval by
-default (`semantic=local`). That call sends no query or source text to an
-embedding service. `semantic=hybrid` is an explicit opt-in that **leaves the
-machine**. In hybrid mode:
+`codedb_context` uses Pareto-frontier hybrid retrieval by default. Local BM25,
+trigram, symbol, and graph retrieval always runs first. Pass `semantic=local`
+for an entirely on-device call that sends no query or source text to an
+embedding service. In the default hybrid mode:
 
 - local BM25/symbol retrieval still runs first and remains the failure-safe
   result;
@@ -559,10 +559,10 @@ another operator's storage policy.
 | `~/.codedb/telemetry.ndjson` | Aggregate tool calls and startup stats | Local telemetry log |
 | `./codedb.snapshot` | File tree, outlines, content, frequency table | Portable snapshot for instant MCP startup |
 
-**Not stored:** In default `semantic=local` mode, no source code is sent
-anywhere. In explicit `semantic=hybrid` and explicit index-build modes, only the
-bounded transient batches above leave the machine; the hosted service does not
-store them and never creates a
+**Not stored:** In explicit `semantic=local` mode, no source code is sent
+anywhere. In the default hybrid and explicit index-build modes, only the
+bounded transient batches above leave the machine; the hosted embedding
+service is zero-data-retention (ZDR), does not store them, and never creates a
 repository index. The optional ANN vectors and graph remain in the local codedb
 data directory. No file contents, file paths, or search queries are collected
 in telemetry. Sensitive files are auto-excluded from indexing and therefore

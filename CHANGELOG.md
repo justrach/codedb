@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Default local retrieval (`semantic=local`); `semantic=hybrid` is an explicit opt-in that leaves the machine.
+- Default hybrid retrieval (`semantic=hybrid`) uses hosted embeddings at embeddings.wiki.codes under zero-data-retention (ZDR). Pass `semantic=local` / `--local` for an on-device-only call.
 - Telemetry and auto-update are opt-in (`CODEDB_TELEMETRY=1`, `CODEDB_AUTO_UPDATE=1`). Auto-update uses the in-process signed updater and never re-runs installer side effects.
 - Releases sign `checksums.sha256` with Ed25519; installers and `codedb update` verify before replacing a binary. macOS installs verify Apple code signatures instead of stripping quarantine with `xattr -c`.
 - Installer auto-registers detected MCP clients, hooks, and DeepWiki by default (opt out with `CODEDB_INSTALL_CLIENTS=0` / `CODEDB_INSTALL_HOOKS=0` / `CODEDB_INSTALL_DEEPWIKI=0` / `CODEDB_NO_INTEGRATIONS=1`). It does not create `~/.claude.json` unless Claude is present, and it allow-lists read-only codedb MCP tools instead of `mcp__codedb__*` (`codedb_index` is never auto-allowed).

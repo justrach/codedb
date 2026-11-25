@@ -539,30 +539,11 @@ test "audit-2: release signatures verify with the compiled-in key" {
     try testing.expectEqualSlices(u8, &sig, &parsed_wrapped);
 }
 
-test "audit-3: semantic defaults to local and hybrid is marked as leaving the machine" {
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local (default) stays on-device") != null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid leaves the machine") != null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "Hybrid retrieval is the default") == null);
-
-    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    defer explorer.deinit();
-    try setTestProjectRoot(&explorer);
-    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
-    var store = Store.init(testing.allocator);
-    defer store.deinit();
-    var agents = AgentRegistry.init(testing.allocator);
-    defer agents.deinit();
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    defer bench_ctx.deinit();
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
-        \\{"task":"where is main defined in this repo"}
-    , .{});
-    defer parsed.deinit();
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(testing.allocator);
-    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
-    try testing.expect(std.mem.indexOf(u8, out.items, "error:") == null or std.mem.indexOf(u8, out.items, "Retrieval privacy") != null);
+test "audit-3: semantic defaults to hybrid; local is the on-device opt-out" {
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "Hybrid retrieval is the default") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid (default)") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local is the explicit on-device-only opt-out") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local (default) stays on-device") == null);
 }
 
 test "audit-10: embeddings URL cannot be set via MCP arguments" {
@@ -3109,7 +3090,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     try testing.expectEqualStrings(default_out.items, markdown_out.items);
 }
 
-test "codedb_context local is default, hybrid is explicit, and provider failure keeps local results" {
+test "codedb_context hybrid is default, local is explicit, and provider failure keeps local results" {
     const url_guard = EnvVarGuard.save("CODEDB_EMBEDDINGS_URL");
     defer url_guard.restore();
     cio.posixSetenv("CODEDB_EMBEDDINGS_URL", "http://example.com/v1/embeddings");
@@ -3148,8 +3129,11 @@ test "codedb_context local is default, hybrid is explicit, and provider failure 
     defer structured.deinit();
     const retrieval = structured.value.object.get("retrieval").?.object;
     try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
-    try testing.expectEqualStrings("not_requested", retrieval.get("semantic").?.string);
+    try testing.expect(retrieval.get("model") == null);
+    try testing.expectEqualStrings("unavailable", retrieval.get("semantic").?.string);
+    try testing.expectEqualStrings("InsecureEmbeddingEndpoint", retrieval.get("detail").?.string);
     try testing.expectEqual(@as(i64, 0), retrieval.get("documents_sent").?.integer);
+    try testing.expectEqual(@as(i64, 1), retrieval.get("sensitive_paths_blocked").?.integer);
 
     var found_local_file = false;
     for (structured.value.object.get("sections").?.array.items) |section_value| {
@@ -3161,21 +3145,18 @@ test "codedb_context local is default, hybrid is explicit, and provider failure 
     }
     try testing.expect(found_local_file);
 
-    const hybrid_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
-        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"hybrid"}
+    const local_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"local"}
     , .{});
-    defer hybrid_args.deinit();
-    var hybrid_out: std.ArrayList(u8) = .empty;
-    defer hybrid_out.deinit(testing.allocator);
-    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &hybrid_args.value.object, &hybrid_out, &store, &explorer, &agents);
-    const hybrid = try std.json.parseFromSlice(std.json.Value, testing.allocator, hybrid_out.items, .{});
-    defer hybrid.deinit();
-    const hybrid_retrieval = hybrid.value.object.get("retrieval").?.object;
-    try testing.expect(hybrid_retrieval.get("model") == null);
-    try testing.expectEqualStrings("unavailable", hybrid_retrieval.get("semantic").?.string);
-    try testing.expectEqualStrings("InsecureEmbeddingEndpoint", hybrid_retrieval.get("detail").?.string);
-    try testing.expectEqual(@as(i64, 0), hybrid_retrieval.get("documents_sent").?.integer);
-    try testing.expectEqual(@as(i64, 1), hybrid_retrieval.get("sensitive_paths_blocked").?.integer);
+    defer local_args.deinit();
+    var local_out: std.ArrayList(u8) = .empty;
+    defer local_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &local_args.value.object, &local_out, &store, &explorer, &agents);
+    const local = try std.json.parseFromSlice(std.json.Value, testing.allocator, local_out.items, .{});
+    defer local.deinit();
+    const local_retrieval = local.value.object.get("retrieval").?.object;
+    try testing.expectEqualStrings("not_requested", local_retrieval.get("semantic").?.string);
+    try testing.expectEqual(@as(i64, 0), local_retrieval.get("documents_sent").?.integer);
 
     const cli_default_argv = [_][]const u8{
         "codedb", explorer.root_path.?, "context", "--json", "trace", "retentionPolicy",
@@ -3188,20 +3169,20 @@ test "codedb_context local is default, hybrid is explicit, and provider failure 
     );
     const cli_default = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_default_out.items, .{});
     defer cli_default.deinit();
-    try testing.expectEqualStrings("not_requested", cli_default.value.object.get("retrieval").?.object.get("semantic").?.string);
+    try testing.expectEqualStrings("unavailable", cli_default.value.object.get("retrieval").?.object.get("semantic").?.string);
 
-    const cli_hybrid_argv = [_][]const u8{
-        "codedb", explorer.root_path.?, "context", "--hybrid", "--json", "trace", "retentionPolicy",
+    const cli_local_argv = [_][]const u8{
+        "codedb", explorer.root_path.?, "context", "--local", "--json", "trace", "retentionPolicy",
     };
-    var cli_hybrid_out: std.ArrayList(u8) = .empty;
-    defer cli_hybrid_out.deinit(testing.allocator);
+    var cli_local_out: std.ArrayList(u8) = .empty;
+    defer cli_local_out.deinit(testing.allocator);
     try testing.expectEqual(
         @as(?u8, 0),
-        mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, explorer.root_path.?, "context", &cli_hybrid_argv, 3, &cli_hybrid_out),
+        mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, explorer.root_path.?, "context", &cli_local_argv, 3, &cli_local_out),
     );
-    const cli_hybrid = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_hybrid_out.items, .{});
-    defer cli_hybrid.deinit();
-    try testing.expectEqualStrings("unavailable", cli_hybrid.value.object.get("retrieval").?.object.get("semantic").?.string);
+    const cli_local = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_local_out.items, .{});
+    defer cli_local.deinit();
+    try testing.expectEqualStrings("not_requested", cli_local.value.object.get("retrieval").?.object.get("semantic").?.string);
 }
 
 test "issue-688: structured no-candidate response retains reader evidence" {
@@ -3314,10 +3295,8 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"edge_type\":{\"type\":\"string\",\"enum\":[\"imports\",\"documents\"]") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"document_hops\":{\"type\":\"integer\"") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"semantic\":{\"type\":\"string\",\"enum\":[\"local\",\"hybrid\"]") != null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local (default)") != null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid is the explicit opt-in") != null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid (default)") == null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "shipping to edge workers") == null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid (default)") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local is the explicit on-device-only opt-out") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "stores neither the repository, request body, candidate paths, nor vectors") != null);
 }
 
