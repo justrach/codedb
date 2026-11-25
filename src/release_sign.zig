@@ -24,12 +24,12 @@ pub fn publicKeyHex() []const u8 {
 }
 
 pub fn parseSignature(raw: []const u8) ?[signature_length]u8 {
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    if (trimmed.len == signature_length) {
+    if (raw.len == signature_length) {
         var out: [signature_length]u8 = undefined;
-        @memcpy(&out, trimmed);
+        @memcpy(&out, raw);
         return out;
     }
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
     if (trimmed.len == signature_length * 2) {
         var out: [signature_length]u8 = undefined;
         _ = std.fmt.hexToBytes(&out, trimmed) catch return null;

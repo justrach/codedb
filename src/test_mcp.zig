@@ -518,6 +518,25 @@ test "audit-2: release signatures verify with the compiled-in key" {
     try testing.expect(!release_sign.verifyManifestWithKey("tampered", &sig, pub_key));
     try testing.expect(!release_sign.verifyManifest(manifest, &sig));
     try testing.expectEqualStrings("1aaec9bc8ba799a3dc0129e3fde949567bc8493b9534aa60f0bf1a32cc921f20", release_sign.publicKeyHex());
+
+    var edge_sig = sig;
+    edge_sig[0] = '\r';
+    edge_sig[edge_sig.len - 1] = '\n';
+    const parsed_edge = release_sign.parseSignature(&edge_sig) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualSlices(u8, &edge_sig, &parsed_edge);
+
+    const hex = std.fmt.bytesToHex(sig, .lower);
+    const parsed_hex = release_sign.parseSignature(&hex) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualSlices(u8, &sig, &parsed_hex);
+
+    var wrapped_hex: [132]u8 = undefined;
+    wrapped_hex[0] = ' ';
+    wrapped_hex[1] = '\n';
+    @memcpy(wrapped_hex[2 .. 2 + hex.len], &hex);
+    wrapped_hex[2 + hex.len] = '\n';
+    wrapped_hex[3 + hex.len] = ' ';
+    const parsed_wrapped = release_sign.parseSignature(&wrapped_hex) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualSlices(u8, &sig, &parsed_wrapped);
 }
 
 test "audit-3: semantic defaults to local and hybrid is marked as leaving the machine" {

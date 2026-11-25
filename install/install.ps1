@@ -94,11 +94,17 @@ try {
   if (-not $python) {
     throw "python3 is required to verify the Ed25519 release signature"
   }
-  $verifyScript = Join-Path $PSScriptRoot "..\scripts\ed25519_pure.py"
-  if (-not (Test-Path -LiteralPath $verifyScript)) {
-    $verifyScript = Join-Path $PSScriptRoot "ed25519_pure.py"
+  # `irm ... | iex` leaves $PSScriptRoot empty; Join-Path then throws under
+  # StrictMode before the inline verifier can run. Only resolve a file path
+  # when this script was actually loaded from disk.
+  $verifyScript = $null
+  if ($PSScriptRoot) {
+    $verifyScript = Join-Path $PSScriptRoot "..\scripts\ed25519_pure.py"
+    if (-not (Test-Path -LiteralPath $verifyScript)) {
+      $verifyScript = Join-Path $PSScriptRoot "ed25519_pure.py"
+    }
   }
-  if (Test-Path -LiteralPath $verifyScript) {
+  if ($verifyScript -and (Test-Path -LiteralPath $verifyScript)) {
     & $python.Source $verifyScript verify $releasePublicKey $downloadedChecksums $downloadedChecksumsSig
     if ($LASTEXITCODE -ne 0) {
       throw "Release signature verification failed"

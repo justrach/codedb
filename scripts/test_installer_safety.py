@@ -38,6 +38,14 @@ def main():
     assert "mcp__codedb__*" not in src
     assert "CODEDB_INSTALL_CLIENTS" in src
     assert "CODEDB_INSTALL_HOOKS" in src
+    ps1 = (ROOT / "install/install.ps1").read_text()
+    assert "if ($PSScriptRoot)" in ps1
+    assert "irm ... | iex" in ps1 or "leaves $PSScriptRoot empty" in ps1
+    join_ps = [line for line in ps1.splitlines() if "Join-Path $PSScriptRoot" in line]
+    assert join_ps, ps1
+    root_guard_at = ps1.find("if ($PSScriptRoot)")
+    first_join_at = ps1.find("Join-Path $PSScriptRoot")
+    assert root_guard_at != -1 and first_join_at != -1 and root_guard_at < first_join_at
     payload = b"#!/bin/sh\nexit 0\n"
     digest = hashlib.sha256(payload).hexdigest()
     with tempfile.TemporaryDirectory(prefix="codedb-installer-") as directory:
