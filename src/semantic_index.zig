@@ -318,7 +318,7 @@ fn secureDataDir(io: std.Io, data_dir: []const u8) !void {
 
 fn syncDataDir(io: std.Io, data_dir: []const u8) !void {
     if (comptime builtin.os.tag == .windows) return;
-    var dir = try std.Io.Dir.cwd().openDir(io, data_dir, .{});
+    var dir = try std.Io.Dir.cwd().openDir(io, data_dir, .{ .iterate = true });
     defer dir.close(io);
     switch (std.posix.errno(std.posix.system.fsync(dir.handle))) {
         .SUCCESS => {},
@@ -2490,6 +2490,17 @@ test "semantic build live fingerprint catches unreconciled repository edits" {
     try changed.writeStreamingAll(io, "pub fn after() void {}\n");
     changed.close(io);
     try testing.expect(indexed != try watcher.liveIndexedContentFingerprint(io, explorer.root_dir.?, testing.allocator));
+}
+
+test "issue-775: directory fsync uses an iterable fd" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "data");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const data_path = path_buf[0..try tmp.dir.realPathFile(io, "data", &path_buf)];
+    try syncDataDir(io, data_path);
 }
 
 test "issue-775: semantic ANN tolerates stale index on file edits and reuses cached embeddings on rebuild" {

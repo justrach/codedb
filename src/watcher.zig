@@ -3600,8 +3600,9 @@ test "notify drain uses exact metadata and refreshes the live fingerprint" {
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "keep.py", .data = new_content });
     const new_stat = try stable_root.statFile(io, "keep.py", .{ .follow_symlinks = false });
-    (known.getPtr("keep.py") orelse return error.TestUnexpectedResult).mtime =
-        @intCast(@divTrunc(new_stat.mtime.nanoseconds, std.time.ns_per_ms));
+    const known_file = known.getPtr("keep.py") orelse return error.TestUnexpectedResult;
+    known_file.mtime = @intCast(@divTrunc(new_stat.mtime.nanoseconds, std.time.ns_per_ms));
+    known_file.mtime_ns = 0;
     try tmp.dir.writeFile(io, .{ .sub_path = "notify", .data = "keep.py\n" });
     const queue = try testing.allocator.create(EventQueue);
     defer testing.allocator.destroy(queue);
