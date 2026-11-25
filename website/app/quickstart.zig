@@ -43,7 +43,7 @@ fn page() h.Node {
         h.p(.{}, "For direct API access or integration with custom tools:"),
         h.pre(.{},
             \\codedb serve /path/to/your/project
-            \\# listening on 127.0.0.1:6767 — Host allowlist + loopback token required
+            \\# listening on localhost:7719
         ),
 
         h.h2(.{}, "4. CLI commands"),
@@ -61,23 +61,26 @@ fn page() h.Node {
         h.p(.{}, "Here is how an AI agent uses codedb to understand a project:"),
         h.pre(.{},
             \\# 1. Get the file tree
-            \\curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \\
-            \\  http://127.0.0.1:6767/explore/tree
+            \\curl localhost:7719/tree
             \\# -> src/main.zig      (zig, 55L, 4 symbols)
             \\#    src/store.zig     (zig, 156L, 12 symbols)
             \\#    src/agent.zig     (zig, 135L, 8 symbols)
             \\
             \\# 2. Drill into a file
-            \\curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \\
-            \\  "http://127.0.0.1:6767/explore/outline?path=src/store.zig"
+            \\curl "localhost:7719/outline?path=src/store.zig"
+            \\# -> L20: struct_def Store
+            \\#    L30: function init
+            \\#    L55: function recordSnapshot
             \\
-            \\# 3. Find a symbol
-            \\curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \\
-            \\  "http://127.0.0.1:6767/explore/symbol?name=AgentRegistry"
+            \\# 3. Find a symbol across the codebase
+            \\curl "localhost:7719/symbol?name=AgentRegistry"
+            \\# -> {"path":"src/agent.zig","line":30,"kind":"struct_def"}
             \\
             \\# 4. Full-text search
-            \\curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \\
-            \\  "http://127.0.0.1:6767/explore/search?q=handleAuth"
+            \\curl "localhost:7719/search?q=handleAuth&max=10"
+            \\
+            \\# 5. Check what changed
+            \\curl "localhost:7719/changes?since=42"
         ),
 
         h.h2(.{}, "MCP tools reference"),

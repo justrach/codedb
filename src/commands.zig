@@ -427,10 +427,7 @@ pub fn runServe(ctx: *RunCtx) !void {
     const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
     defer reap_thread.join();
 
-    var serve_token_buf: [64]u8 = undefined;
-    const serve_token = server.resolveServeToken(io, &serve_token_buf);
-    std.log.info("codedb: {d} files indexed, listening on 127.0.0.1:{d}", .{ store.currentSeq(), port });
-    std.log.info("codedb serve: require Host 127.0.0.1|localhost and Authorization: Bearer {s} (or CODEDB_SERVE_TOKEN)", .{serve_token});
+    std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
 
     // Thin-CLI proxy listener: lets `codedb <root> <query>` invocations
     // reuse this warm explorer/store over a per-project Unix socket instead
@@ -447,7 +444,7 @@ pub fn runServe(ctx: *RunCtx) !void {
         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
     }
     spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
-    try server.serve(io, allocator, store, &agents, explorer, queue, port, serve_token);
+    try server.serve(io, allocator, store, &agents, explorer, queue, port);
 }
 
 pub fn runMcp(ctx: *RunCtx) !void {

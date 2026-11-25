@@ -589,33 +589,6 @@ test "audit-7: queries.log hashes the raw query" {
     try testing.expect(std.mem.indexOf(u8, line, "\"query\":") == null);
 }
 
-test "audit-5: HTTP serve requires loopback Host, a token, exact routes, and no wildcard CORS" {
-    const server_mod = @import("server.zig");
-    const health = server_mod.parseRequestLine("GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n") orelse return error.TestUnexpectedResult;
-    try testing.expectEqualStrings("GET", health.method);
-    try testing.expectEqualStrings("/health", health.path);
-    try testing.expect(server_mod.parseRequestLine("GET /healthiness HTTP/1.1\r\n\r\n").?.path.len != 0);
-    try testing.expect(!std.mem.eql(u8, server_mod.parseRequestLine("GET /healthiness HTTP/1.1\r\n\r\n").?.path, "/health"));
-    try testing.expect(server_mod.hostAllowed("127.0.0.1"));
-    try testing.expect(server_mod.hostAllowed("localhost:6767"));
-    try testing.expect(server_mod.hostAllowed("[::1]:6767"));
-    try testing.expect(!server_mod.hostAllowed("evil.example"));
-    try testing.expect(!server_mod.hostAllowed("codedb.local"));
-    const req = "GET /explore/tree HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret-token\r\n\r\n";
-    try testing.expectEqualStrings("secret-token", server_mod.extractBearerToken(req).?);
-    try testing.expect(server_mod.tokenMatches("secret-token", "secret-token"));
-    try testing.expect(!server_mod.tokenMatches("secret-token", "other-token"));
-    var hdr: [256]u8 = undefined;
-    const headers = server_mod.formatJsonHeaders(&hdr, "200 OK", 2) orelse return error.TestUnexpectedResult;
-    try testing.expect(!server_mod.headersAllowWildcardCors(headers));
-    try testing.expect(std.mem.indexOf(u8, headers, "Access-Control-Allow-Origin") == null);
-    try testing.expect(std.mem.indexOf(u8, @embedFile("server.zig"), "\"/file/read\"") != null);
-    try testing.expect(std.mem.indexOf(u8, @embedFile("server.zig"), "410 Gone") != null);
-    const decoded = try server_mod.percentDecode(testing.allocator, "src%2Fmain.zig");
-    defer testing.allocator.free(decoded);
-    try testing.expectEqualStrings("src/main.zig", decoded);
-}
-
 test "audit-8: .envrc and .direnv are sensitive locally" {
     try testing.expect(watcher.isSensitivePath(".envrc"));
     try testing.expect(watcher.isSensitivePath(".envrc.local"));

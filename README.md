@@ -283,7 +283,7 @@ replaces that role.)
 | `codedb hot` | Recently modified files |
 | `codedb reindex` | Force a fresh filesystem scan, rebuild all local indexes, and refresh the live daemon |
 | `codedb snapshot` | Write codedb.snapshot to project root |
-| `codedb serve` | Loopback HTTP daemon on :6767 (token + Host allowlist required) |
+| `codedb serve` | HTTP daemon on :7719 |
 | `codedb mcp [path]` | JSON-RPC/MCP server over stdio |
 | `codedb update` | Self-update to the latest release; older builds can be repaired with the installer |
 | `codedb nuke` | Uninstall codedb, remove caches/snapshots, and deregister MCP integrations |
@@ -296,31 +296,27 @@ replaces that role.)
 ### Example: agent explores a codebase
 
 ```bash
-# codedb serve prints a loopback token. Export it, then:
-export CODEDB_SERVE_TOKEN=...   # or pass -H "Authorization: Bearer ..."
-
 # 1. Get the file tree
-curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
-  http://127.0.0.1:6767/explore/tree
+curl localhost:7719/tree
 # → src/main.zig      (zig, 55L, 4 symbols)
 #   src/store.zig     (zig, 156L, 12 symbols)
 #   src/agent.zig     (zig, 135L, 8 symbols)
 
 # 2. Drill into a file
-curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
-  "http://127.0.0.1:6767/explore/outline?path=src/store.zig"
+curl "localhost:7719/outline?path=src/store.zig"
+# → L20: struct_def Store
+#   L30: function init
+#   L55: function recordSnapshot
 
 # 3. Find a symbol across the codebase
-curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
-  "http://127.0.0.1:6767/explore/symbol?name=AgentRegistry"
+curl "localhost:7719/symbol?name=AgentRegistry"
+# → {"path":"src/agent.zig","line":30,"kind":"struct_def"}
 
 # 4. Full-text search
-curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
-  "http://127.0.0.1:6767/explore/search?q=handleAuth"
+curl "localhost:7719/search?q=handleAuth&max=10"
 
 # 5. Check what changed
-curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
-  "http://127.0.0.1:6767/changes?since=42"
+curl "localhost:7719/changes?since=42"
 ```
 
 ---

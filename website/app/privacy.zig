@@ -50,7 +50,7 @@ fn page() h.Node {
         h.p(.{}, "Usage telemetry is off until you set CODEDB_TELEMETRY=1. When enabled, codedb writes aggregate tool-call counts, latency, and startup stats to ~/.codedb/telemetry.ndjson and may sync that file to codedb.codegraff.com/telemetry/ingest. No source code, file contents, file paths, or search queries are collected. CODEDB_NO_TELEMETRY=1 and --no-telemetry still force it off."),
 
         h.h2(.{}, "Network access"),
-        h.p(.{}, "Indexing, outlines, and file reads make zero network requests. Default hybrid retrieval makes one ZDR embedding request to embeddings.wiki.codes. The HTTP server binds 127.0.0.1 only, requires a loopback token, and allows Host 127.0.0.1 / localhost / [::1]. File contents are not served over HTTP."),
+        h.p(.{}, "Indexing, outlines, and file reads make zero network requests. Default hybrid retrieval makes one ZDR embedding request to embeddings.wiki.codes. The HTTP server binds 127.0.0.1 only."),
         h.p(.{}, "Installation and opted-in updates fetch release metadata, binaries, checksums, and Ed25519 signatures from GitHub Releases or codedb.codegraff.com. Auto-update is off unless CODEDB_AUTO_UPDATE=1; the in-process updater never re-runs installer side effects."),
 
         h.h2(.{}, "Website telemetry"),
