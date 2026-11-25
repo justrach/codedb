@@ -458,9 +458,8 @@ pub fn runMcp(ctx: *RunCtx) !void {
     const cfg = ctx.cfg;
     const no_telemetry = ctx.no_telemetry;
     const mcp_deferred_root = ctx.mcp_deferred_root;
-    // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
-    // or when the last check was within the last 24h). Detached thread, so
-    // this doesn't block server startup.
+    // Opt-in in-process auto-update (CODEDB_AUTO_UPDATE=1). Never re-runs
+    // the installer. No-op unless explicitly enabled and the 24h stamp is due.
     update_mod.maybeAutoUpdate(io, allocator);
 
     var agents = AgentRegistry.init(allocator);
@@ -476,9 +475,10 @@ pub fn runMcp(ctx: *RunCtx) !void {
     if (query_log) |ql| mcp_server.setQueryLogPath(ql);
 
     const startup_t0 = cio.milliTimestamp();
-    // --no-telemetry is stripped globally above (#528 item 12); honor it
-    // here alongside CODEDB_NO_TELEMETRY (checked inside Telemetry.init).
+    // --no-telemetry is stripped globally above (#528 item 12). Telemetry is
+    // off unless CODEDB_TELEMETRY=1; CODEDB_NO_TELEMETRY still forces off.
     const telemetry_disabled = no_telemetry;
+    telemetry.Telemetry.maybeWriteConsentNotice(io, allocator);
 
     var telem = telemetry.Telemetry.init(io, data_dir, allocator, telemetry_disabled);
     defer telem.deinit();

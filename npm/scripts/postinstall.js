@@ -10,6 +10,20 @@ const { pipeline } = require("node:stream/promises");
 const pkg = require("../package.json");
 const VERSION = pkg.version;
 const REPO = "justrach/codedb";
+const RELEASE_PUBKEY_HEX =
+  "1aaec9bc8ba799a3dc0129e3fde949567bc8493b9534aa60f0bf1a32cc921f20";
+
+function verifyChecksumSignature(manifest, signature) {
+  const keyBytes = Buffer.from(RELEASE_PUBKEY_HEX, "hex");
+  const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), keyBytes]);
+  const key = crypto.createPublicKey({ key: spki, format: "der", type: "spki" });
+  let sig = signature;
+  if (sig.length === 128 && /^[0-9a-fA-F]+$/.test(sig.toString("utf8").trim())) {
+    sig = Buffer.from(sig.toString("utf8").trim(), "hex");
+  }
+  if (sig.length !== 64) return false;
+  return crypto.verify(null, manifest, key, sig);
+}
 
 const PLATFORM_MAP = {
   "darwin-arm64": "codedb-darwin-arm64",
@@ -67,10 +81,15 @@ function get(url, redirectsLeft = 5) {
 }
 
 async function fetchText(url) {
+  const buf = await fetchBytes(url);
+  return buf.toString("utf8");
+}
+
+async function fetchBytes(url) {
   const res = await get(url);
   const chunks = [];
   for await (const chunk of res) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 async function downloadToFile(url, dest) {
@@ -102,6 +121,7 @@ async function main() {
   const baseUrl = `https://github.com/${REPO}/releases/download/${tag}`;
   const assetUrl = `${baseUrl}/${asset}`;
   const checksumsUrl = `${baseUrl}/checksums.sha256`;
+  const checksumsSigUrl = `${baseUrl}/checksums.sha256.sig`;
 
   const vendorDir = path.join(__dirname, "..", "vendor");
   fs.mkdirSync(vendorDir, { recursive: true });
@@ -113,7 +133,13 @@ async function main() {
 
   let expectedHex;
   try {
-    const checksums = await fetchText(checksumsUrl);
+    const checksumsBuf = await fetchBytes(checksumsUrl);
+    const checksums = checksumsBuf.toString("utf8");
+    const sigBuf = await fetchBytes(checksumsSigUrl);
+    if (!verifyChecksumSignature(checksumsBuf, sigBuf)) {
+      logErr(`release signature verification failed for ${checksumsSigUrl}`);
+      process.exit(1);
+    }
     for (const line of checksums.split(/\r?\n/)) {
       const m = line.match(/^([0-9a-fA-F]{64})\s+\*?(.+)$/);
       if (m && m[2].trim() === asset) {

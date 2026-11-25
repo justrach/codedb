@@ -20,11 +20,12 @@ fn page() h.Node {
         h.h1(.{ .class = "section-title" }, "Up and running in 60 seconds"),
 
         h.h2(.{}, "1. Install"),
-        h.p(.{}, "On macOS and Linux, the installer downloads codedb and auto-registers detected MCP clients:"),
+        h.p(.{}, "On macOS and Linux, the installer downloads a signed codedb binary and auto-registers detected MCP clients:"),
         h.pre(.{},
             \\curl -fsSL https://codedb.codegraff.com/install.sh | bash
+            \\# opt out: CODEDB_INSTALL_CLIENTS=0 CODEDB_INSTALL_HOOKS=0 CODEDB_INSTALL_DEEPWIKI=0
         ),
-        h.p(.{}, "On native Windows x86_64, run the checksum-verifying installer in PowerShell:"),
+        h.p(.{}, "On native Windows x86_64, run the signature-verifying installer in PowerShell:"),
         h.pre(.{},
             \\irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex
         ),
@@ -33,7 +34,7 @@ fn page() h.Node {
         h.h2(.{}, "2. MCP server (recommended)"),
         h.p(.{}, "The shell installer registers detected clients automatically. On Windows, configure the client with the absolute path to codedb.exe. Then open a project and the MCP tools are available to your AI agent."),
         h.pre(.{},
-            \\# Manual MCP start (auto-configured by install script)
+            \\# MCP start
             \\codedb mcp /path/to/your/project
         ),
         h.p(.{}, "The MCP server indexes your codebase on startup, then serves all queries over JSON-RPC 2.0 stdio. Sub-millisecond responses, every time."),
@@ -96,7 +97,7 @@ fn page() h.Node {
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_read") }), h.td(.{}, "Read file content") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_changes") }), h.td(.{}, "Changed files since a sequence number") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_status") }), h.td(.{}, "Index status (file count, current sequence)") }),
-                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_snapshot") }), h.td(.{}, "Full pre-rendered JSON snapshot of the codebase") }),
+                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_snapshot") }), h.td(.{}, "Local JSON snapshot for faster MCP startup; never uploaded") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_bundle") }), h.td(.{}, "Batch multiple queries in one call") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_projects") }), h.td(.{}, "List all indexed local projects") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_index") }), h.td(.{}, "Index a new local folder") }),

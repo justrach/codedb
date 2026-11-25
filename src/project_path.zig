@@ -32,7 +32,8 @@ fn hasSensitiveDirectory(path: []const u8) bool {
     while (components.next()) |component| {
         if (std.ascii.eqlIgnoreCase(component, ".ssh") or
             std.ascii.eqlIgnoreCase(component, ".gnupg") or
-            std.ascii.eqlIgnoreCase(component, ".aws")) return true;
+            std.ascii.eqlIgnoreCase(component, ".aws") or
+            std.ascii.eqlIgnoreCase(component, ".direnv")) return true;
     }
     return false;
 }
@@ -47,11 +48,13 @@ pub fn isSensitive(path: []const u8) bool {
     }
     if (basename.len >= 4 and std.ascii.eqlIgnoreCase(basename[0..4], ".env") and
         (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
+    if (basename.len >= 6 and std.ascii.eqlIgnoreCase(basename[0..6], ".envrc")) return true;
     const sensitive_names = [_][]const u8{
         ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",
         "credentials.json", "service-account.json", "secrets.json", "secrets.yaml",
         "secrets.yml",      "id_rsa",               "id_ed25519",   ".git-credentials",
         "id_ecdsa",         "id_dsa",               "id_ecdsa_sk",  "id_ed25519_sk",
+        ".direnvrc",
     };
     for (sensitive_names) |name| {
         if (std.ascii.eqlIgnoreCase(basename, name)) return true;

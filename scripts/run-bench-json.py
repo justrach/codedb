@@ -109,9 +109,20 @@ def benchmark_provenance(args: argparse.Namespace) -> dict | None:
     }
 
 
-def semantic_safety_commands(build_graph: str, bench_side: str | None) -> tuple[tuple[str, ...], ...]:
+def semantic_safety_commands(
+    build_graph: str,
+    bench_side: str | None,
+    source_root: pathlib.Path | None = None,
+) -> tuple[tuple[str, ...], ...]:
     """Return head-only safety roots supported by the checked-out build graph."""
     if bench_side == "base" or 'name = "test-semantic-index"' not in build_graph:
+        return ()
+    # Unpaired `Benchmark base` runs this script from HEAD against a different
+    # worktree and does not pass --bench-side. Do not execute HEAD safety tests
+    # on that historical tree.
+    root = (source_root or pathlib.Path.cwd()).resolve()
+    script_root = pathlib.Path(__file__).resolve().parent.parent
+    if bench_side is None and root != script_root:
         return ()
     return (
         ("zig", "build", "test-semantic-index"),
@@ -128,7 +139,7 @@ def main() -> int:
     # the compatibility gate; old release bases intentionally keep their own
     # graph unchanged.
     build_graph = pathlib.Path("build.zig").read_text(encoding="utf-8")
-    for command in semantic_safety_commands(build_graph, args.bench_side):
+    for command in semantic_safety_commands(build_graph, args.bench_side, pathlib.Path.cwd()):
         safety = subprocess.run(command, capture_output=True, text=True, check=False)
         if safety.stdout:
             sys.stderr.write(safety.stdout)

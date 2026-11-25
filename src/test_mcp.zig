@@ -276,6 +276,10 @@ test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
+    const g_telem = EnvVarGuard.save("CODEDB_TELEMETRY");
+    defer g_telem.restore();
+    cio.posixSetenv("CODEDB_TELEMETRY", "1");
+
     var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
     defer telem.deinit();
 
@@ -378,6 +382,8 @@ test "issue-93: isSensitivePath blocks .env and credentials" {
     try testing.expect(!watcher.isSensitivePath("src/server.zig"));
     try testing.expect(!watcher.isSensitivePath("README.md"));
     try testing.expect(!watcher.isSensitivePath("package.json"));
+    try testing.expect(watcher.isSensitivePath(".envrc"));
+    try testing.expect(watcher.isSensitivePath(".direnv/allow"));
 }
 
 test "issue-93: isPathSafe blocks traversal" {
@@ -429,21 +435,21 @@ test "auto-update: shouldRunAutoUpdate gates correctly" {
     const day_ms: i64 = 24 * 60 * 60 * 1000;
 
     // Disabled by env: never runs
-    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
-    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
-    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true, true));
 
-    // First run (no stamp): always runs when not disabled
-    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
+    // First run (no stamp): always runs when explicitly enabled
+    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false, true));
 
     // Throttled: <24h since last check → skip
-    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false, true));
 
     // Exactly 24h since last check → run
-    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false, true));
 
     // Long after last check → run
-    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false, true));
 }
 
 test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
@@ -463,7 +469,7 @@ test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp sta
     const now_ms: i64 = 1_700_000_000_000;
     const future_last_ms: i64 = now_ms + day_ms * 30; // 30 days in the future
 
-    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false, true));
 }
 
 test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
@@ -488,7 +494,117 @@ test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corru
     const now_ms: i64 = 1_700_000_000_000;
     const last_ms: i64 = std.math.minInt(i64);
 
-    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false, true));
+}
+
+test "audit-1: auto-update is off unless CODEDB_AUTO_UPDATE is set" {
+    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, false, false));
+    try testing.expect(!update_mod.autoUpdateEnvEnabled(null, false));
+    try testing.expect(update_mod.autoUpdateEnvEnabled("1", false));
+    try testing.expect(!update_mod.autoUpdateEnvEnabled("1", true));
+    const src = @embedFile("update.zig");
+    try testing.expect(std.mem.indexOf(u8, src, "install.sh | bash") == null);
+    try testing.expect(std.mem.indexOf(u8, src, "codedb.codegraff.com/install.sh") == null);
+}
+
+test "audit-2: release signatures verify with the compiled-in key" {
+    const release_sign = @import("release_sign.zig");
+    var test_seed: [32]u8 = undefined;
+    @memset(&test_seed, 0xaa);
+    const pub_key = try release_sign.publicKeyFromSeed(test_seed);
+    const manifest = "deadbeef  codedb-linux-x86_64\n";
+    const sig = try release_sign.signManifestWithSeed(manifest, test_seed);
+    try testing.expect(release_sign.verifyManifestWithKey(manifest, &sig, pub_key));
+    try testing.expect(!release_sign.verifyManifestWithKey("tampered", &sig, pub_key));
+    try testing.expect(!release_sign.verifyManifest(manifest, &sig));
+    try testing.expectEqualStrings("1aaec9bc8ba799a3dc0129e3fde949567bc8493b9534aa60f0bf1a32cc921f20", release_sign.publicKeyHex());
+
+    var edge_sig = sig;
+    edge_sig[0] = '\r';
+    edge_sig[edge_sig.len - 1] = '\n';
+    const parsed_edge = release_sign.parseSignature(&edge_sig) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualSlices(u8, &edge_sig, &parsed_edge);
+
+    const hex = std.fmt.bytesToHex(sig, .lower);
+    const parsed_hex = release_sign.parseSignature(&hex) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualSlices(u8, &sig, &parsed_hex);
+
+    var wrapped_hex: [132]u8 = undefined;
+    wrapped_hex[0] = ' ';
+    wrapped_hex[1] = '\n';
+    @memcpy(wrapped_hex[2 .. 2 + hex.len], &hex);
+    wrapped_hex[2 + hex.len] = '\n';
+    wrapped_hex[3 + hex.len] = ' ';
+    const parsed_wrapped = release_sign.parseSignature(&wrapped_hex) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualSlices(u8, &sig, &parsed_wrapped);
+}
+
+test "audit-3: semantic defaults to hybrid; local is the on-device opt-out" {
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "Hybrid retrieval is the default") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid (default)") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local is the explicit on-device-only opt-out") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local (default) stays on-device") == null);
+}
+
+test "audit-10: embeddings URL cannot be set via MCP arguments" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"where is main defined in this repo","embeddings_url":"https://evil.example/v1/embeddings"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out.items, "embeddings URL cannot be set via MCP arguments") != null);
+}
+
+test "audit-6: telemetry is off unless CODEDB_TELEMETRY is set" {
+    const g_on = EnvVarGuard.save("CODEDB_TELEMETRY");
+    defer g_on.restore();
+    const g_off = EnvVarGuard.save("CODEDB_NO_TELEMETRY");
+    defer g_off.restore();
+    cio.posixUnsetenv("CODEDB_TELEMETRY");
+    cio.posixUnsetenv("CODEDB_NO_TELEMETRY");
+    try testing.expect(!telemetry_mod.Telemetry.envOptedIn());
+    var telem = telemetry_mod.Telemetry.init(io, "/tmp", testing.allocator, false);
+    defer telem.deinit();
+    try testing.expect(!telem.enabled);
+}
+
+test "audit-7: queries.log hashes the raw query" {
+    const line_src = "secret token value";
+    var buf: [512]u8 = undefined;
+    const line = mcp_mod.formatQueryLogLine(&buf, "codedb_search", line_src, 12, 1000, 1) orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, line, "secret token value") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "query_sha256") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"query\":") == null);
+}
+
+test "audit-8: .envrc and .direnv are sensitive locally" {
+    try testing.expect(watcher.isSensitivePath(".envrc"));
+    try testing.expect(watcher.isSensitivePath(".envrc.local"));
+    try testing.expect(watcher.isSensitivePath(".direnv/allow"));
+    try testing.expect(watcher.isSensitivePath("src/.direnv/cache"));
+    try testing.expect(!watcher.isSensitivePath(".envoy.json"));
+}
+
+test "audit-9: codedb_index stays inside the session root unless allow-listed" {
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj", "/home/me/proj", ""));
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj", "/home/me/proj/src", ""));
+    try testing.expect(!root_policy.indexPathAllowed("/home/me/proj", "/home/me/other", ""));
+    try testing.expect(!root_policy.indexPathAllowed("/home/me/proj", "/etc", ""));
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj", "/home/me/other", "/home/me/other:/opt/extra"));
+    try testing.expect(!root_policy.indexPathAllowed("/home/me/proj", "/opt/secret", "/home/me/other"));
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj/", "/home/me/proj", ""));
 }
 
 test "issue-150: --help prints usage" {
@@ -1454,6 +1570,10 @@ test "issue-386: telemetry recordToolCall preserves UTF-8 codepoint boundaries" 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
+
+    const g_telem = EnvVarGuard.save("CODEDB_TELEMETRY");
+    defer g_telem.restore();
+    cio.posixSetenv("CODEDB_TELEMETRY", "1");
 
     var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
     defer telem.deinit();

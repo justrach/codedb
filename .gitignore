@@ -6,6 +6,9 @@ zig-out/
 
 # Local/dev files
 .codedb/
+*.sk.pem
+*.seed.hex
+codedb-release-signing*
 
 # OS files
 .DS_Store
