@@ -276,6 +276,10 @@ test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
+    const g_telem = EnvVarGuard.save("CODEDB_TELEMETRY");
+    defer g_telem.restore();
+    cio.posixSetenv("CODEDB_TELEMETRY", "1");
+
     var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
     defer telem.deinit();
 
@@ -378,6 +382,8 @@ test "issue-93: isSensitivePath blocks .env and credentials" {
     try testing.expect(!watcher.isSensitivePath("src/server.zig"));
     try testing.expect(!watcher.isSensitivePath("README.md"));
     try testing.expect(!watcher.isSensitivePath("package.json"));
+    try testing.expect(watcher.isSensitivePath(".envrc"));
+    try testing.expect(watcher.isSensitivePath(".direnv/allow"));
 }
 
 test "issue-93: isPathSafe blocks traversal" {
@@ -429,21 +435,21 @@ test "auto-update: shouldRunAutoUpdate gates correctly" {
     const day_ms: i64 = 24 * 60 * 60 * 1000;
 
     // Disabled by env: never runs
-    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
-    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
-    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true, true));
 
-    // First run (no stamp): always runs when not disabled
-    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
+    // First run (no stamp): always runs when explicitly enabled
+    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false, true));
 
     // Throttled: <24h since last check → skip
-    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false, true));
 
     // Exactly 24h since last check → run
-    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false, true));
 
     // Long after last check → run
-    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false, true));
 }
 
 test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
@@ -463,7 +469,7 @@ test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp sta
     const now_ms: i64 = 1_700_000_000_000;
     const future_last_ms: i64 = now_ms + day_ms * 30; // 30 days in the future
 
-    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false, true));
 }
 
 test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
@@ -488,7 +494,144 @@ test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corru
     const now_ms: i64 = 1_700_000_000_000;
     const last_ms: i64 = std.math.minInt(i64);
 
-    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false));
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false, true));
+}
+
+test "audit-1: auto-update is off unless CODEDB_AUTO_UPDATE is set" {
+    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, false, false));
+    try testing.expect(!update_mod.autoUpdateEnvEnabled(null, false));
+    try testing.expect(update_mod.autoUpdateEnvEnabled("1", false));
+    try testing.expect(!update_mod.autoUpdateEnvEnabled("1", true));
+    const src = @embedFile("update.zig");
+    try testing.expect(std.mem.indexOf(u8, src, "install.sh | bash") == null);
+    try testing.expect(std.mem.indexOf(u8, src, "codedb.codegraff.com/install.sh") == null);
+}
+
+test "audit-2: release signatures verify with the compiled-in key" {
+    const release_sign = @import("release_sign.zig");
+    var test_seed: [32]u8 = undefined;
+    @memset(&test_seed, 0xaa);
+    const pub_key = try release_sign.publicKeyFromSeed(test_seed);
+    const manifest = "deadbeef  codedb-linux-x86_64\n";
+    const sig = try release_sign.signManifestWithSeed(manifest, test_seed);
+    try testing.expect(release_sign.verifyManifestWithKey(manifest, &sig, pub_key));
+    try testing.expect(!release_sign.verifyManifestWithKey("tampered", &sig, pub_key));
+    try testing.expect(!release_sign.verifyManifest(manifest, &sig));
+    try testing.expectEqualStrings("1aaec9bc8ba799a3dc0129e3fde949567bc8493b9534aa60f0bf1a32cc921f20", release_sign.publicKeyHex());
+}
+
+test "audit-3: semantic defaults to local and hybrid is marked as leaving the machine" {
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local (default) stays on-device") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid leaves the machine") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "Hybrid retrieval is the default") == null);
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"where is main defined in this repo"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out.items, "error:") == null or std.mem.indexOf(u8, out.items, "Retrieval privacy") != null);
+}
+
+test "audit-10: embeddings URL cannot be set via MCP arguments" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"where is main defined in this repo","embeddings_url":"https://evil.example/v1/embeddings"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out.items, "embeddings URL cannot be set via MCP arguments") != null);
+}
+
+test "audit-6: telemetry is off unless CODEDB_TELEMETRY is set" {
+    const g_on = EnvVarGuard.save("CODEDB_TELEMETRY");
+    defer g_on.restore();
+    const g_off = EnvVarGuard.save("CODEDB_NO_TELEMETRY");
+    defer g_off.restore();
+    cio.posixUnsetenv("CODEDB_TELEMETRY");
+    cio.posixUnsetenv("CODEDB_NO_TELEMETRY");
+    try testing.expect(!telemetry_mod.Telemetry.envOptedIn());
+    var telem = telemetry_mod.Telemetry.init(io, "/tmp", testing.allocator, false);
+    defer telem.deinit();
+    try testing.expect(!telem.enabled);
+}
+
+test "audit-7: queries.log hashes the raw query" {
+    const line_src = "secret token value";
+    var buf: [512]u8 = undefined;
+    const line = mcp_mod.formatQueryLogLine(&buf, "codedb_search", line_src, 12, 1000, 1) orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, line, "secret token value") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "query_sha256") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"query\":") == null);
+}
+
+test "audit-5: HTTP serve requires loopback Host, a token, exact routes, and no wildcard CORS" {
+    const server_mod = @import("server.zig");
+    const health = server_mod.parseRequestLine("GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("GET", health.method);
+    try testing.expectEqualStrings("/health", health.path);
+    try testing.expect(server_mod.parseRequestLine("GET /healthiness HTTP/1.1\r\n\r\n").?.path.len != 0);
+    try testing.expect(!std.mem.eql(u8, server_mod.parseRequestLine("GET /healthiness HTTP/1.1\r\n\r\n").?.path, "/health"));
+    try testing.expect(server_mod.hostAllowed("127.0.0.1"));
+    try testing.expect(server_mod.hostAllowed("localhost:6767"));
+    try testing.expect(server_mod.hostAllowed("[::1]:6767"));
+    try testing.expect(!server_mod.hostAllowed("evil.example"));
+    try testing.expect(!server_mod.hostAllowed("codedb.local"));
+    const req = "GET /explore/tree HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret-token\r\n\r\n";
+    try testing.expectEqualStrings("secret-token", server_mod.extractBearerToken(req).?);
+    try testing.expect(server_mod.tokenMatches("secret-token", "secret-token"));
+    try testing.expect(!server_mod.tokenMatches("secret-token", "other-token"));
+    var hdr: [256]u8 = undefined;
+    const headers = server_mod.formatJsonHeaders(&hdr, "200 OK", 2) orelse return error.TestUnexpectedResult;
+    try testing.expect(!server_mod.headersAllowWildcardCors(headers));
+    try testing.expect(std.mem.indexOf(u8, headers, "Access-Control-Allow-Origin") == null);
+    try testing.expect(std.mem.indexOf(u8, @embedFile("server.zig"), "\"/file/read\"") != null);
+    try testing.expect(std.mem.indexOf(u8, @embedFile("server.zig"), "410 Gone") != null);
+    const decoded = try server_mod.percentDecode(testing.allocator, "src%2Fmain.zig");
+    defer testing.allocator.free(decoded);
+    try testing.expectEqualStrings("src/main.zig", decoded);
+}
+
+test "audit-8: .envrc and .direnv are sensitive locally" {
+    try testing.expect(watcher.isSensitivePath(".envrc"));
+    try testing.expect(watcher.isSensitivePath(".envrc.local"));
+    try testing.expect(watcher.isSensitivePath(".direnv/allow"));
+    try testing.expect(watcher.isSensitivePath("src/.direnv/cache"));
+    try testing.expect(!watcher.isSensitivePath(".envoy.json"));
+}
+
+test "audit-9: codedb_index stays inside the session root unless allow-listed" {
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj", "/home/me/proj", ""));
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj", "/home/me/proj/src", ""));
+    try testing.expect(!root_policy.indexPathAllowed("/home/me/proj", "/home/me/other", ""));
+    try testing.expect(!root_policy.indexPathAllowed("/home/me/proj", "/etc", ""));
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj", "/home/me/other", "/home/me/other:/opt/extra"));
+    try testing.expect(!root_policy.indexPathAllowed("/home/me/proj", "/opt/secret", "/home/me/other"));
+    try testing.expect(root_policy.indexPathAllowed("/home/me/proj/", "/home/me/proj", ""));
 }
 
 test "issue-150: --help prints usage" {
@@ -1454,6 +1597,10 @@ test "issue-386: telemetry recordToolCall preserves UTF-8 codepoint boundaries" 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
+
+    const g_telem = EnvVarGuard.save("CODEDB_TELEMETRY");
+    defer g_telem.restore();
+    cio.posixSetenv("CODEDB_TELEMETRY", "1");
 
     var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
     defer telem.deinit();
@@ -2943,7 +3090,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     try testing.expectEqualStrings(default_out.items, markdown_out.items);
 }
 
-test "codedb_context hybrid is default, local is explicit, and provider failure keeps local results" {
+test "codedb_context local is default, hybrid is explicit, and provider failure keeps local results" {
     const url_guard = EnvVarGuard.save("CODEDB_EMBEDDINGS_URL");
     defer url_guard.restore();
     cio.posixSetenv("CODEDB_EMBEDDINGS_URL", "http://example.com/v1/embeddings");
@@ -2982,11 +3129,8 @@ test "codedb_context hybrid is default, local is explicit, and provider failure 
     defer structured.deinit();
     const retrieval = structured.value.object.get("retrieval").?.object;
     try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
-    try testing.expect(retrieval.get("model") == null);
-    try testing.expectEqualStrings("unavailable", retrieval.get("semantic").?.string);
-    try testing.expectEqualStrings("InsecureEmbeddingEndpoint", retrieval.get("detail").?.string);
+    try testing.expectEqualStrings("not_requested", retrieval.get("semantic").?.string);
     try testing.expectEqual(@as(i64, 0), retrieval.get("documents_sent").?.integer);
-    try testing.expectEqual(@as(i64, 1), retrieval.get("sensitive_paths_blocked").?.integer);
 
     var found_local_file = false;
     for (structured.value.object.get("sections").?.array.items) |section_value| {
@@ -2998,18 +3142,21 @@ test "codedb_context hybrid is default, local is explicit, and provider failure 
     }
     try testing.expect(found_local_file);
 
-    const local_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
-        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"local"}
+    const hybrid_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"hybrid"}
     , .{});
-    defer local_args.deinit();
-    var local_out: std.ArrayList(u8) = .empty;
-    defer local_out.deinit(testing.allocator);
-    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &local_args.value.object, &local_out, &store, &explorer, &agents);
-    const local = try std.json.parseFromSlice(std.json.Value, testing.allocator, local_out.items, .{});
-    defer local.deinit();
-    const local_retrieval = local.value.object.get("retrieval").?.object;
-    try testing.expectEqualStrings("not_requested", local_retrieval.get("semantic").?.string);
-    try testing.expectEqual(@as(i64, 0), local_retrieval.get("documents_sent").?.integer);
+    defer hybrid_args.deinit();
+    var hybrid_out: std.ArrayList(u8) = .empty;
+    defer hybrid_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &hybrid_args.value.object, &hybrid_out, &store, &explorer, &agents);
+    const hybrid = try std.json.parseFromSlice(std.json.Value, testing.allocator, hybrid_out.items, .{});
+    defer hybrid.deinit();
+    const hybrid_retrieval = hybrid.value.object.get("retrieval").?.object;
+    try testing.expect(hybrid_retrieval.get("model") == null);
+    try testing.expectEqualStrings("unavailable", hybrid_retrieval.get("semantic").?.string);
+    try testing.expectEqualStrings("InsecureEmbeddingEndpoint", hybrid_retrieval.get("detail").?.string);
+    try testing.expectEqual(@as(i64, 0), hybrid_retrieval.get("documents_sent").?.integer);
+    try testing.expectEqual(@as(i64, 1), hybrid_retrieval.get("sensitive_paths_blocked").?.integer);
 
     const cli_default_argv = [_][]const u8{
         "codedb", explorer.root_path.?, "context", "--json", "trace", "retentionPolicy",
@@ -3022,20 +3169,20 @@ test "codedb_context hybrid is default, local is explicit, and provider failure 
     );
     const cli_default = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_default_out.items, .{});
     defer cli_default.deinit();
-    try testing.expectEqualStrings("unavailable", cli_default.value.object.get("retrieval").?.object.get("semantic").?.string);
+    try testing.expectEqualStrings("not_requested", cli_default.value.object.get("retrieval").?.object.get("semantic").?.string);
 
-    const cli_local_argv = [_][]const u8{
-        "codedb", explorer.root_path.?, "context", "--local", "--json", "trace", "retentionPolicy",
+    const cli_hybrid_argv = [_][]const u8{
+        "codedb", explorer.root_path.?, "context", "--hybrid", "--json", "trace", "retentionPolicy",
     };
-    var cli_local_out: std.ArrayList(u8) = .empty;
-    defer cli_local_out.deinit(testing.allocator);
+    var cli_hybrid_out: std.ArrayList(u8) = .empty;
+    defer cli_hybrid_out.deinit(testing.allocator);
     try testing.expectEqual(
         @as(?u8, 0),
-        mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, explorer.root_path.?, "context", &cli_local_argv, 3, &cli_local_out),
+        mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, explorer.root_path.?, "context", &cli_hybrid_argv, 3, &cli_hybrid_out),
     );
-    const cli_local = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_local_out.items, .{});
-    defer cli_local.deinit();
-    try testing.expectEqualStrings("not_requested", cli_local.value.object.get("retrieval").?.object.get("semantic").?.string);
+    const cli_hybrid = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_hybrid_out.items, .{});
+    defer cli_hybrid.deinit();
+    try testing.expectEqualStrings("unavailable", cli_hybrid.value.object.get("retrieval").?.object.get("semantic").?.string);
 }
 
 test "issue-688: structured no-candidate response retains reader evidence" {
@@ -3148,8 +3295,10 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"edge_type\":{\"type\":\"string\",\"enum\":[\"imports\",\"documents\"]") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"document_hops\":{\"type\":\"integer\"") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"semantic\":{\"type\":\"string\",\"enum\":[\"local\",\"hybrid\"]") != null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid (default)") != null);
-    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local is the explicit on-device-only opt-out") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local (default)") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid is the explicit opt-in") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid (default)") == null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "shipping to edge workers") == null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "stores neither the repository, request body, candidate paths, nor vectors") != null);
 }
 

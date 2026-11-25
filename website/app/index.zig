@@ -214,7 +214,7 @@ const html =
     \\    <div class="tool-item"><span class="tool-name">codedb_edit</span> <span class="tool-desc">Atomic line-range edits</span></div>
     \\    <div class="tool-item"><span class="tool-name">codedb_changes</span> <span class="tool-desc">Changed files since sequence</span></div>
     \\    <div class="tool-item"><span class="tool-name">codedb_status</span> <span class="tool-desc">Index status and health</span></div>
-    \\    <div class="tool-item"><span class="tool-name">codedb_snapshot</span> <span class="tool-desc">Full codebase JSON snapshot</span></div>
+    \\    <div class="tool-item"><span class="tool-name">codedb_snapshot</span> <span class="tool-desc">Local JSON snapshot for faster MCP startup (never uploaded)</span></div>
     \\  </div>
     \\</div>
     \\

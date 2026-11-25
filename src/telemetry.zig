@@ -74,7 +74,7 @@ pub const Telemetry = struct {
     file: ?std.Io.File = null,
     io: std.Io = undefined,
     write_offset: u64 = 0,
-    enabled: bool = true,
+    enabled: bool = false,
     buf: [4096]u8 = undefined,
     path_buf: [std.fs.max_path_bytes]u8 = undefined,
     path_len: usize = 0,
@@ -95,11 +95,19 @@ pub const Telemetry = struct {
     /// without ever blocking a tool response.
     sync_interval_seconds: u64 = 30,
 
+    pub fn envOptedIn() bool {
+        const v = cio.posixGetenv("CODEDB_TELEMETRY") orelse return false;
+        return std.mem.eql(u8, v, "1") or
+            std.mem.eql(u8, v, "true") or
+            std.mem.eql(u8, v, "yes") or
+            std.mem.eql(u8, v, "on");
+    }
+
     pub fn init(io: std.Io, data_dir: []const u8, allocator: std.mem.Allocator, disabled: bool) Telemetry {
         var self = Telemetry{};
         self.io = io;
 
-        if (disabled or cio.posixGetenv("CODEDB_NO_TELEMETRY") != null) {
+        if (disabled or cio.posixGetenv("CODEDB_NO_TELEMETRY") != null or !envOptedIn()) {
             self.enabled = false;
             return self;
         }
@@ -114,7 +122,27 @@ pub const Telemetry = struct {
         if (self.file) |f| {
             self.write_offset = f.length(io) catch 0;
         }
+        self.enabled = true;
         return self;
+    }
+
+    /// One-time stderr notice the first time telemetry is off with no consent file.
+    pub fn maybeWriteConsentNotice(io: std.Io, allocator: std.mem.Allocator) void {
+        if (envOptedIn()) return;
+        const home = cio.homeDir() orelse return;
+        if (home.len == 0) return;
+        const path = std.fmt.allocPrint(allocator, "{s}/.codedb/telemetry-consent", .{home}) catch return;
+        defer allocator.free(path);
+        if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
+            return;
+        } else |_| {}
+        const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+        defer allocator.free(dir_path);
+        std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+        const file = std.Io.Dir.cwd().createFile(io, path, .{ .exclusive = true }) catch return;
+        defer file.close(io);
+        file.writePositionalAll(io, "unset\n", 0) catch {};
+        std.log.info("codedb: telemetry is off until you opt in with CODEDB_TELEMETRY=1 (aggregate tool-call stats only; no source, paths, or queries)", .{});
     }
 
     pub fn deinit(self: *Telemetry) void {
@@ -164,7 +192,7 @@ pub const Telemetry = struct {
     pub fn record(self: *Telemetry, kind: Event.Kind) void {
         if (!self.enabled) return;
         // Fast-out when there's no destination configured. Telemetry default
-        // initialization (`Telemetry{ .enabled = true }`) leaves file=null,
+        // initialization (`Telemetry{ .enabled = false }`) leaves file=null,
         // which is the bench harness's "telem_on" — formerly we still paid
         // for the lock + ring-write + atomic update only to drop it on the
         // floor at flush time. Skipping here makes telemetry overhead

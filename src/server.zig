@@ -14,7 +14,6 @@ const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
 const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
-const project_file = @import("project_file.zig");
 const project_path = @import("project_path.zig");
 
 pub fn serve(
@@ -25,6 +24,7 @@ pub fn serve(
     explorer: *Explorer,
     queue: *watcher.EventQueue,
     port: u16,
+    token: []const u8,
 ) !void {
     _ = queue;
 
@@ -52,6 +52,7 @@ pub fn serve(
             .agents = agents,
             .explorer = explorer,
             .stream = stream,
+            .token = token,
         };
         const t = std.Thread.spawn(.{}, handleThread, .{ctx}) catch {
             stream.close(io);
@@ -69,6 +70,7 @@ const HandlerCtx = struct {
     agents: *AgentRegistry,
     explorer: *Explorer,
     stream: std.Io.net.Stream,
+    token: []const u8,
 };
 
 fn handleThread(ctx: *HandlerCtx) void {
@@ -78,7 +80,7 @@ fn handleThread(ctx: *HandlerCtx) void {
         ctx.stream.close(io);
         allocator.destroy(ctx);
     }
-    handleConnection(io, allocator, ctx.store, ctx.agents, ctx.explorer, ctx.stream);
+    handleConnection(io, allocator, ctx.store, ctx.agents, ctx.explorer, ctx.stream, ctx.token);
 }
 
 /// Thin wrapper that owns a TCP stream plus a matching `std.Io.Writer` with a
@@ -117,6 +119,7 @@ fn handleConnection(
     agents: *AgentRegistry,
     explorer: *Explorer,
     stream: std.Io.net.Stream,
+    token: []const u8,
 ) void {
     var buf: [65536]u8 = undefined;
 
@@ -195,14 +198,39 @@ fn handleConnection(
 
     const request = buf[0..total];
 
+    const parsed = parseRequestLine(request) orelse {
+        respondJson(&conn, "400 Bad Request", "{\"error\":\"malformed request line\"}");
+        return;
+    };
+    const host = headerValue(request, "Host") orelse {
+        respondJson(&conn, "400 Bad Request", "{\"error\":\"missing host header\"}");
+        return;
+    };
+    if (!hostAllowed(host)) {
+        respondJson(&conn, "403 Forbidden", "{\"error\":\"host not allowed\"}");
+        return;
+    }
+
+    const is_health = std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/health");
+    if (!is_health) {
+        const provided = extractBearerToken(request) orelse {
+            respondJson(&conn, "401 Unauthorized", "{\"error\":\"missing loopback token\"}");
+            return;
+        };
+        if (!tokenMatches(provided, token)) {
+            respondJson(&conn, "401 Unauthorized", "{\"error\":\"invalid loopback token\"}");
+            return;
+        }
+    }
+
     // ── Health ──
-    if (std.mem.startsWith(u8, request, "GET /health")) {
+    if (is_health) {
         respondJson(&conn, "200 OK", "{\"status\":\"ok\"}");
         return;
     }
 
     // ── Agent: register ──
-    if (std.mem.startsWith(u8, request, "POST /agent/register")) {
+    if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/agent/register")) {
         const body = extractBody(request);
         const name = if (body.len > 0) extractJsonString(body, "name") orelse "unnamed" else "unnamed";
         const id = agents.register(name) catch {
@@ -220,7 +248,7 @@ fn handleConnection(
     }
 
     // ── Agent: heartbeat ──
-    if (std.mem.startsWith(u8, request, "POST /agent/heartbeat")) {
+    if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/agent/heartbeat")) {
         const agent_id = extractQueryParamInt(request, "id") orelse {
             respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?id=\"}");
             return;
@@ -231,15 +259,19 @@ fn handleConnection(
     }
 
     // ── Lock ──
-    if (std.mem.startsWith(u8, request, "POST /lock")) {
+    if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/lock")) {
         const agent_id = extractQueryParamInt(request, "agent") orelse {
             respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?agent=\"}");
             return;
         };
-        const path = extractQueryParam(request, "path") orelse {
+        const path = queryParamDecoded(allocator, request, "path") catch {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid ?path=\"}");
+            return;
+        } orelse {
             respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?path=\"}");
             return;
         };
+        defer allocator.free(path);
         const got = agents.tryLock(agent_id, path, 30_000) catch {
             respondJson(&conn, "500 Internal Server Error", "{\"error\":\"lock failed\"}");
             return;
@@ -253,66 +285,32 @@ fn handleConnection(
     }
 
     // ── Unlock ──
-    if (std.mem.startsWith(u8, request, "POST /unlock")) {
+    if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/unlock")) {
         const agent_id = extractQueryParamInt(request, "agent") orelse {
             respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?agent=\"}");
             return;
         };
-        const path = extractQueryParam(request, "path") orelse {
+        const path = queryParamDecoded(allocator, request, "path") catch {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid ?path=\"}");
+            return;
+        } orelse {
             respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?path=\"}");
             return;
         };
+        defer allocator.free(path);
         agents.releaseLock(agent_id, path);
         respondJson(&conn, "200 OK", "{\"unlocked\":true}");
         return;
     }
 
-    // ── File read ──
-    if (std.mem.startsWith(u8, request, "GET /file/read")) {
-        const path = extractQueryParam(request, "path") orelse {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?path=\"}");
-            return;
-        };
-        if (!isPathSafe(path)) {
-            respondJson(&conn, "403 Forbidden", "{\"error\":\"path traversal not allowed\"}");
-            return;
-        }
-        if (watcher.isSensitivePath(path)) {
-            respondJson(&conn, "403 Forbidden", "{\"error\":\"access to sensitive file blocked\"}");
-            return;
-        }
-        const root_dir = explorer.root_dir orelse {
-            respondJson(&conn, "500 Internal Server Error", "{\"error\":\"root not configured\"}");
-            return;
-        };
-        const content = project_file.readAllocNoFollow(io, root_dir, path, allocator, .limited(10 * 1024 * 1024)) catch |err| switch (err) {
-            error.FileNotFound => {
-                respondJson(&conn, "404 Not Found", "{\"error\":\"file not found\"}");
-                return;
-            },
-            else => {
-                // File symlinks and other disallowed resolutions are a
-                // controlled policy rejection, never a content-bearing read.
-                respondJson(&conn, "403 Forbidden", "{\"error\":\"file read not allowed\"}");
-                return;
-            },
-        };
-        defer allocator.free(content);
-
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(allocator);
-        const w = cio.listWriter(&out, allocator);
-        w.writeAll("{\"path\":\"") catch return;
-        writeJsonEscaped(&out, allocator, path) catch return;
-        w.print("\",\"size\":{d},\"content\":\"", .{content.len}) catch return;
-        writeJsonEscaped(&out, allocator, content) catch return;
-        w.writeAll("\"}") catch return;
-        respondJson(&conn, "200 OK", out.items);
+    // ── File read (removed) ──
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/file/read")) {
+        respondJson(&conn, "410 Gone", "{\"error\":\"file reads are not available over HTTP; use MCP codedb_read or the CLI\"}");
         return;
     }
 
     // ── Changes since cursor ──
-    if (std.mem.startsWith(u8, request, "GET /changes")) {
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/changes")) {
         const since = extractQueryParamInt(request, "since") orelse 0;
         const changes = store.changesSinceDetailed(since, allocator) catch {
             respondJson(&conn, "500 Internal Server Error", "{\"error\":\"changes query failed\"}");
@@ -338,7 +336,7 @@ fn handleConnection(
     }
 
     // ── Explore: tree ──
-    if (std.mem.startsWith(u8, request, "GET /explore/tree")) {
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/explore/tree")) {
         const tree = explorer.getTree(allocator, false) catch {
             respondJson(&conn, "500 Internal Server Error", "{\"error\":\"tree failed\"}");
             return;
@@ -356,13 +354,12 @@ fn handleConnection(
     }
 
     // ── Explore: outline ──
-    if (std.mem.startsWith(u8, request, "GET /explore/outline")) {
-        const path_raw = extractQueryParam(request, "path") orelse {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?path=\"}");
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/explore/outline")) {
+        const path = queryParamDecoded(allocator, request, "path") catch {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid ?path=\"}");
             return;
-        };
-        const path = percentDecode(allocator, path_raw) catch {
-            respondJson(&conn, "500 Internal Server Error", "{\"error\":\"decode failed\"}");
+        } orelse {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?path=\"}");
             return;
         };
         defer allocator.free(path);
@@ -406,11 +403,15 @@ fn handleConnection(
     }
 
     // ── Explore: symbol (find all) ──
-    if (std.mem.startsWith(u8, request, "GET /explore/symbol")) {
-        const name = extractQueryParam(request, "name") orelse {
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/explore/symbol")) {
+        const name = queryParamDecoded(allocator, request, "name") catch {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid ?name=\"}");
+            return;
+        } orelse {
             respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?name=\"}");
             return;
         };
+        defer allocator.free(name);
         const results = explorer.findAllSymbols(name, allocator) catch {
             respondJson(&conn, "500 Internal Server Error", "{\"error\":\"search failed\"}");
             return;
@@ -443,7 +444,7 @@ fn handleConnection(
     }
 
     // ── Explore: hot ──
-    if (std.mem.startsWith(u8, request, "GET /explore/hot")) {
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/explore/hot")) {
         const hot = explorer.getHotFiles(store, allocator, 10) catch {
             respondJson(&conn, "500 Internal Server Error", "{\"error\":\"hot files failed\"}");
             return;
@@ -468,13 +469,12 @@ fn handleConnection(
     }
 
     // ── Explore: deps ──
-    if (std.mem.startsWith(u8, request, "GET /explore/deps")) {
-        const path_raw = extractQueryParam(request, "path") orelse {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?path=\"}");
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/explore/deps")) {
+        const path = queryParamDecoded(allocator, request, "path") catch {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid ?path=\"}");
             return;
-        };
-        const path = percentDecode(allocator, path_raw) catch {
-            respondJson(&conn, "500 Internal Server Error", "{\"error\":\"decode failed\"}");
+        } orelse {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?path=\"}");
             return;
         };
         defer allocator.free(path);
@@ -505,13 +505,12 @@ fn handleConnection(
     }
 
     // ── Explore: word search (inverted index, O(1) lookup) ──
-    if (std.mem.startsWith(u8, request, "GET /explore/word")) {
-        const word_raw = extractQueryParam(request, "q") orelse {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?q=\"}");
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/explore/word")) {
+        const word = queryParamDecoded(allocator, request, "q") catch {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid ?q=\"}");
             return;
-        };
-        const word = percentDecode(allocator, word_raw) catch {
-            respondJson(&conn, "500 Internal Server Error", "{\"error\":\"decode failed\"}");
+        } orelse {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?q=\"}");
             return;
         };
         defer allocator.free(word);
@@ -541,13 +540,12 @@ fn handleConnection(
     }
 
     // ── Explore: search (text grep, trigram-accelerated) ──
-    if (std.mem.startsWith(u8, request, "GET /explore/search")) {
-        const query_raw = extractQueryParam(request, "q") orelse {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?q=\"}");
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/explore/search")) {
+        const query = queryParamDecoded(allocator, request, "q") catch {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid ?q=\"}");
             return;
-        };
-        const query = percentDecode(allocator, query_raw) catch {
-            respondJson(&conn, "500 Internal Server Error", "{\"error\":\"decode failed\"}");
+        } orelse {
+            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing ?q=\"}");
             return;
         };
         defer allocator.free(query);
@@ -580,7 +578,7 @@ fn handleConnection(
     }
 
     // ── Snapshot ──
-    if (std.mem.startsWith(u8, request, "GET /snapshot")) {
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/snapshot")) {
         const snap = snapshot_json.buildSnapshot(explorer, store, allocator) catch {
             respondJson(&conn, "500 Internal Server Error", "{\"error\":\"snapshot build failed\"}");
             return;
@@ -591,7 +589,7 @@ fn handleConnection(
     }
 
     // ── Seq ──
-    if (std.mem.startsWith(u8, request, "GET /seq")) {
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/seq")) {
         var seq_buf: [32]u8 = undefined;
         const body = std.fmt.bufPrint(&seq_buf, "{{\"seq\":{d}}}", .{store.currentSeq()}) catch return;
         respondJson(&conn, "200 OK", body);
@@ -619,10 +617,25 @@ fn isPathSafe(path: []const u8) bool {
 
 fn respondJson(conn: *Conn, status: []const u8, body: []const u8) void {
     var hdr_buf: [512]u8 = undefined;
-    const hdr = std.fmt.bufPrint(&hdr_buf, "HTTP/1.1 {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ status, body.len }) catch return;
+    const hdr = formatJsonHeaders(&hdr_buf, status, body.len) orelse return;
     conn.writeAll(hdr);
     conn.writeAll(body);
     conn.flush();
+}
+
+pub fn formatJsonHeaders(buf: []u8, status: []const u8, body_len: usize) ?[]const u8 {
+    return std.fmt.bufPrint(buf, "HTTP/1.1 {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ status, body_len }) catch null;
+}
+
+pub fn headersAllowWildcardCors(headers: []const u8) bool {
+    var lines = std.mem.splitSequence(u8, headers, "\r\n");
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+        if (std.ascii.eqlIgnoreCase(name, "Access-Control-Allow-Origin") and std.mem.eql(u8, value, "*")) return true;
+    }
+    return false;
 }
 
 /// Append a JSON-escaped version of `s` to the trailing `out` list.
@@ -649,6 +662,101 @@ fn writeJsonEscaped(out: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []cons
 
 // ── HTTP parsing helpers ────────────────────────────────────────
 
+pub const RequestLine = struct {
+    method: []const u8,
+    path: []const u8,
+};
+
+pub fn parseRequestLine(request: []const u8) ?RequestLine {
+    const line_end = std.mem.indexOf(u8, request, "\r\n") orelse std.mem.indexOfScalar(u8, request, '\n') orelse return null;
+    var line = request[0..line_end];
+    if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
+    const sp1 = std.mem.indexOfScalar(u8, line, ' ') orelse return null;
+    const method = line[0..sp1];
+    const rest = std.mem.trimStart(u8, line[sp1 + 1 ..], " ");
+    const sp2 = std.mem.indexOfScalar(u8, rest, ' ') orelse rest.len;
+    const target = rest[0..sp2];
+    if (method.len == 0 or target.len == 0 or target[0] != '/') return null;
+    const q = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
+    return .{ .method = method, .path = target[0..q] };
+}
+
+pub fn headerValue(request: []const u8, name: []const u8) ?[]const u8 {
+    const header_end = std.mem.indexOf(u8, request, "\r\n\r\n") orelse request.len;
+    var lines = std.mem.splitSequence(u8, request[0..header_end], "\r\n");
+    _ = lines.next();
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        if (std.ascii.eqlIgnoreCase(key, name)) {
+            return std.mem.trim(u8, line[colon + 1 ..], " \t");
+        }
+    }
+    return null;
+}
+
+pub fn hostAllowed(host: []const u8) bool {
+    const value = std.mem.trim(u8, host, " \t");
+    if (value.len == 0) return false;
+    if (value[0] == '[') {
+        const close = std.mem.indexOfScalar(u8, value, ']') orelse return false;
+        return std.mem.eql(u8, value[1..close], "::1");
+    }
+    const host_only = if (std.mem.lastIndexOfScalar(u8, value, ':')) |c| value[0..c] else value;
+    return std.mem.eql(u8, host_only, "127.0.0.1") or std.ascii.eqlIgnoreCase(host_only, "localhost");
+}
+
+pub fn extractBearerToken(request: []const u8) ?[]const u8 {
+    if (headerValue(request, "Authorization")) |auth| {
+        if (auth.len > 7 and std.ascii.eqlIgnoreCase(auth[0..7], "Bearer ")) {
+            const token = std.mem.trim(u8, auth[7..], " \t");
+            if (token.len > 0) return token;
+        }
+    }
+    if (headerValue(request, "X-Codedb-Token")) |raw| {
+        const token = std.mem.trim(u8, raw, " \t");
+        if (token.len > 0) return token;
+    }
+    if (extractQueryParam(request, "token")) |token| {
+        if (token.len > 0) return token;
+    }
+    return null;
+}
+
+pub fn tokenMatches(provided: []const u8, expected: []const u8) bool {
+    if (expected.len == 0) return false;
+    const n = @max(provided.len, expected.len);
+    var diff: u8 = @intFromBool(provided.len != expected.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const a: u8 = if (i < provided.len) provided[i] else 0;
+        const b: u8 = if (i < expected.len) expected[i] else 0xff;
+        diff |= a ^ b;
+    }
+    return diff == 0;
+}
+
+pub fn resolveServeToken(io: std.Io, buf: []u8) []const u8 {
+    if (cio.posixGetenv("CODEDB_SERVE_TOKEN")) |env| {
+        const trimmed = std.mem.trim(u8, env, " \t\r\n");
+        if (trimmed.len > 0 and trimmed.len <= buf.len) {
+            @memcpy(buf[0..trimmed.len], trimmed);
+            return buf[0..trimmed.len];
+        }
+    }
+    const n = @min(buf.len, 64);
+    var raw: [32]u8 = undefined;
+    io.random(raw[0..]);
+    const hex = std.fmt.bytesToHex(raw, .lower);
+    @memcpy(buf[0..n], hex[0..n]);
+    return buf[0..n];
+}
+
+fn queryParamDecoded(allocator: std.mem.Allocator, request: []const u8, key: []const u8) !?[]u8 {
+    const raw = extractQueryParam(request, key) orelse return null;
+    return try percentDecode(allocator, raw);
+}
+
 fn extractQueryParam(request: []const u8, key: []const u8) ?[]const u8 {
     const first_line_end = std.mem.indexOf(u8, request, "\r\n") orelse request.len;
     const first_line = request[0..first_line_end];
@@ -668,7 +776,7 @@ fn extractQueryParam(request: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+pub fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;

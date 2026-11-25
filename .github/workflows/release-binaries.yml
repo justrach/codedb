@@ -192,20 +192,35 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          ref: ${{ env.RELEASE_TAG }}
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
 
-      - name: Assemble release assets
+      - name: Assemble and sign release assets
         shell: bash
+        env:
+          CODEDB_RELEASE_SIGNING_SEED: ${{ secrets.CODEDB_RELEASE_SIGNING_SEED }}
         run: |
           set -euo pipefail
           mkdir -p assets
           find dist -type f -name 'codedb-*' -exec cp {} assets/ \;
+          if [[ -d install/hooks ]]; then
+            cp install/hooks/*.sh assets/ || true
+          fi
           (
             cd assets
             sha256sum codedb-* | sort > checksums.sha256
           )
+          expect_pub="$(python3 -c 'from pathlib import Path; t=Path("src/release_sign.zig").read_text(); import re; print(re.search(r"public_key_hex = \"([0-9a-f]+)\"", t).group(1))')"
+          python3 scripts/sign-release.py \
+            --manifest assets/checksums.sha256 \
+            --out assets/checksums.sha256.sig \
+            --expect-public "$expect_pub"
 
       - name: Upload assets to GitHub Release
         shell: bash
@@ -213,4 +228,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" assets/codedb-* assets/checksums.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" assets/codedb-* assets/checksums.sha256 assets/checksums.sha256.sig --clobber --repo "$GITHUB_REPOSITORY"
+          if compgen -G "assets/*.sh" > /dev/null; then
+            gh release upload "$RELEASE_TAG" assets/*.sh --clobber --repo "$GITHUB_REPOSITORY"
+          fi

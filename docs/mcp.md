@@ -18,19 +18,18 @@ scan, and the most common failure modes.
 
 ## 1. Quick install
 
-### macOS and Linux (auto-configures detected clients)
+### macOS and Linux
 
 ```bash
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
-The installer downloads the binary for your platform, drops it in `~/bin`
-(or `$CODEDB_DIR` when set), and auto-registers
-codedb as an MCP server in every client it can find — Claude Code, Codex,
-Gemini CLI, Cursor, Windsurf, Devin, oh-my-pi, Hermes, Qwen Code, ZCode,
-Trae, Cline, Copilot CLI, Antigravity, Kiro, and OpenCode. It prints the exact `codedb mcp` command it
-registered. Only clients that already look installed (config dir or CLI on
-`PATH`) are touched.
+The installer downloads a signed binary to `~/bin` (or `$CODEDB_DIR` when
+set). Client MCP configs, hooks, and DeepWiki stay off unless you opt in
+with `CODEDB_INSTALL_CLIENTS=1`, `CODEDB_INSTALL_HOOKS=1`, and/or
+`CODEDB_INSTALL_DEEPWIKI=1`. It never creates `~/.claude.json` unless Claude
+is already installed, and it never grants a blanket `mcp__codedb__*` allow.
+It prints the `codedb mcp` command to add yourself.
 
 ### Windows x86_64 (native)
 

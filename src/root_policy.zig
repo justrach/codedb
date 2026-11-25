@@ -6,6 +6,30 @@ pub fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
     return path.len == prefix.len or path[prefix.len] == '/';
 }
 
+pub fn trimTrailingSlashes(path: []const u8) []const u8 {
+    var end = path.len;
+    while (end > 1 and (path[end - 1] == '/' or path[end - 1] == '\\')) end -= 1;
+    return path[0..end];
+}
+
+/// codedb_index may touch the MCP session root, plus any absolute folders in
+/// CODEDB_INDEX_ALLOW (`:`-separated, or `;` if the list contains a semicolon).
+pub fn indexPathAllowed(session_root: []const u8, requested: []const u8, allow_list: []const u8) bool {
+    const session = trimTrailingSlashes(session_root);
+    const req = trimTrailingSlashes(requested);
+    if (session.len == 0 or req.len == 0) return false;
+    if (isExactOrChild(req, session)) return true;
+    if (allow_list.len == 0) return false;
+    const delim: u8 = if (std.mem.indexOfScalar(u8, allow_list, ';') != null) ';' else ':';
+    var it = std.mem.splitScalar(u8, allow_list, delim);
+    while (it.next()) |raw| {
+        const entry = trimTrailingSlashes(std.mem.trim(u8, raw, " \t"));
+        if (entry.len == 0) continue;
+        if (isExactOrChild(req, entry)) return true;
+    }
+    return false;
+}
+
 /// Reject Windows network roots and a whole drive before any open/stat call.
 /// This is deliberately syntax-only so tests and protocol admission behave
 /// identically when cross-compiled from a non-Windows host.
@@ -258,6 +282,16 @@ test "issue-174: home directory itself is denied" {
 }
 test "issue-80: empty path is denied" {
     try testing.expect(!isIndexableRoot(""));
+}
+
+test "audit-9: codedb_index stays inside the session root unless allow-listed" {
+    try testing.expect(indexPathAllowed("/home/me/proj", "/home/me/proj", ""));
+    try testing.expect(indexPathAllowed("/home/me/proj", "/home/me/proj/src", ""));
+    try testing.expect(!indexPathAllowed("/home/me/proj", "/home/me/other", ""));
+    try testing.expect(!indexPathAllowed("/home/me/proj", "/etc", ""));
+    try testing.expect(indexPathAllowed("/home/me/proj", "/home/me/other", "/home/me/other:/opt/extra"));
+    try testing.expect(!indexPathAllowed("/home/me/proj", "/opt/secret", "/home/me/other"));
+    try testing.expect(indexPathAllowed("/home/me/proj/", "/home/me/proj", ""));
 }
 
 test "issue-80: /tmp is denied" {

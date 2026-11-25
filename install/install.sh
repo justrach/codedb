@@ -3,6 +3,7 @@ set -euo pipefail
 
 BASE_URL="${CODEDB_URL:-https://codedb.codegraff.com}"
 INSTALL_DIR="${CODEDB_DIR:-$HOME/bin}"
+CODEDB_RELEASE_PUBKEY_DEFAULT="1aaec9bc8ba799a3dc0129e3fde949567bc8493b9534aa60f0bf1a32cc921f20"
 
 # Colors
 R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' B='\033[0;34m'
@@ -49,9 +50,105 @@ detect_platform() {
   echo "${os}-${arch}"
 }
 
+verify_release_signature() {
+  local manifest_file="$1"
+  local sig_file="$2"
+  local pubkey="${CODEDB_RELEASE_PUBKEY:-$CODEDB_RELEASE_PUBKEY_DEFAULT}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${R}error: python3 is required to verify the Ed25519 release signature${N}\n" >&2
+    return 1
+  fi
+  python3 - "$pubkey" "$manifest_file" "$sig_file" << 'PY'
+import hashlib, sys
+b = 256
+q = 2**255 - 19
+l = 2**252 + 27742317777372353535851937790883648493
+def _inv(x):
+    return pow(x, q - 2, q)
+d = -121665 * _inv(121666) % q
+I = pow(2, (q - 1) // 4, q)
+def _xrecover(y):
+    xx = (y * y - 1) * _inv(d * y * y + 1)
+    x = pow(xx, (q + 3) // 8, q)
+    if (x * x - xx) % q != 0:
+        x = (x * I) % q
+    if x % 2:
+        x = q - x
+    return x
+By = 4 * _inv(5)
+B = (_xrecover(By) % q, By % q, 1, (_xrecover(By) * By) % q)
+def _edwards_add(p1, p2):
+    x1, y1, z1, t1 = p1
+    x2, y2, z2, t2 = p2
+    a = (y1 - x1) * (y2 - x2) % q
+    bb = (y1 + x1) * (y2 + x2) % q
+    c = t1 * 2 * d * t2 % q
+    dd = z1 * 2 * z2 % q
+    e, f, g, h = bb - a, dd - c, dd + c, bb + a
+    return (e * f % q, g * h % q, f * g % q, e * h % q)
+def _scalarmult(p1, s):
+    q1 = (0, 1, 1, 0)
+    while s:
+        if s & 1:
+            q1 = _edwards_add(q1, p1)
+        p1 = _edwards_add(p1, p1)
+        s >>= 1
+    return q1
+def _encodepoint(p1):
+    x, y, z, _t = p1
+    zi = _inv(z)
+    x, y = (x * zi) % q, (y * zi) % q
+    bits = bytearray(y.to_bytes(32, "little"))
+    bits[31] ^= (x & 1) << 7
+    return bytes(bits)
+def _isoncurve(p1):
+    x, y, z, t = p1
+    return z % q != 0 and (x * y - z * t) % q == 0 and (y * y - x * x - z * z - d * t * t) % q == 0
+def _decodepoint(s):
+    y = int.from_bytes(s, "little") & ((1 << 255) - 1)
+    x = _xrecover(y)
+    if (x & 1) != (s[31] >> 7):
+        x = q - x
+    p1 = (x, y, 1, x * y % q)
+    if not _isoncurve(p1):
+        raise ValueError("invalid point")
+    return p1
+pubkey = bytes.fromhex(sys.argv[1])
+message = open(sys.argv[2], "rb").read()
+sig = open(sys.argv[3], "rb").read()
+if len(sig) == 128:
+    try:
+        sig = bytes.fromhex(sig.decode().strip())
+    except Exception:
+        sys.exit(1)
+if len(sig) != 64 or len(pubkey) != 32:
+    sys.exit(1)
+try:
+    r = _decodepoint(sig[:32])
+    a = _decodepoint(pubkey)
+except ValueError:
+    sys.exit(1)
+s = int.from_bytes(sig[32:], "little")
+if s >= l:
+    sys.exit(1)
+h = int.from_bytes(hashlib.sha512(sig[:32] + pubkey + message).digest(), "little")
+ok = _encodepoint(_scalarmult(B, s)) == _encodepoint(_edwards_add(_scalarmult(a, h), r))
+sys.exit(0 if ok else 1)
+PY
+}
+
+claude_is_installed() {
+  command -v claude >/dev/null 2>&1 || [ -d "$HOME/.claude" ] || [ -f "$HOME/.claude.json" ]
+}
+
 register_claude() {
   local codedb_bin="$1"
   local config="$HOME/.claude.json"
+
+  if ! claude_is_installed; then
+    printf "  ${D}claude:  skip (claude not installed; will not create ~/.claude.json)${N}\n"
+    return
+  fi
 
   if ! command -v python3 >/dev/null 2>&1; then
     printf "  ${D}claude:  skip (python3 not found)${N}\n"
@@ -78,6 +175,10 @@ PYEOF
 
 register_codex() {
   local codedb_bin="$1"
+  if ! command -v codex >/dev/null 2>&1 && [ ! -d "$HOME/.codex" ]; then
+    printf "  ${D}codex:  skip (codex not installed)${N}\n"
+    return
+  fi
   local config_dir="$HOME/.codex"
   local config="$config_dir/config.toml"
 
@@ -101,6 +202,9 @@ register_codex() {
 
 register_codex_policy() {
   local codedb_bin="$1"
+  if ! command -v codex >/dev/null 2>&1 && [ ! -d "$HOME/.codex" ]; then
+    return
+  fi
   # #680: auto-install the CodeDB-first AGENTS.md policy for Codex sessions.
   # The binary owns the sticky opt-out (marker + removal receipt), so a user's
   # removal survives re-runs and the 24h auto-update. Older binaries without
@@ -486,8 +590,8 @@ register_deepwiki() {
   # local index. Registered additively alongside codedb; an existing "deepwiki"
   # entry is never overwritten. Set CODEDB_INSTALL_DEEPWIKI=0 to opt out.
   # Note: text sent to its tools (e.g. ask_question) leaves the machine.
-  if [ "${CODEDB_INSTALL_DEEPWIKI:-1}" = "0" ]; then
-    printf "  ${D}deepwiki:  skip (CODEDB_INSTALL_DEEPWIKI=0)${N}\n"
+  if [ "${CODEDB_INSTALL_DEEPWIKI:-0}" != "1" ]; then
+    printf "  ${D}deepwiki:  skip (opt in with CODEDB_INSTALL_DEEPWIKI=1)${N}\n"
     return
   fi
   if ! command -v python3 >/dev/null 2>&1; then
@@ -563,6 +667,10 @@ register_deepwiki() {
 }
 
 register_hooks() {
+  if ! claude_is_installed; then
+    printf "  ${D}hooks:   skip (claude not installed; will not write ~/.claude)${N}\n"
+    return
+  fi
   if ! command -v python3 >/dev/null 2>&1; then
     printf "  ${D}hooks:   skip (python3 not found)${N}\n"
     return
@@ -576,12 +684,10 @@ settings_path = os.path.join(home, ".claude", "settings.json")
 os.makedirs(hooks_dir, exist_ok=True)
 
 # Opt-out: CODEDB_NO_HOOKS=1 skips (re-)registering the PreToolUse
-# block-legacy hook for THIS run only. It is deliberately NOT persisted: the
-# background auto-updater re-runs this installer with the environment it
-# inherited from the codedb process (src/update.zig), so a transient export
-# must never become a permanent on-disk opt-out. Persist it explicitly with
-# CODEDB_PERSIST_NO_HOOKS=1 or `touch ~/.codedb/no-hooks`; `rm` that file to
-# re-enable. A deliberate removal from settings.json also persists (#658).
+# block-legacy hook for THIS run only. Auto-update no longer re-runs this
+# installer. Persist a skip with CODEDB_PERSIST_NO_HOOKS=1 or
+# `touch ~/.codedb/no-hooks`; `rm` that file to re-enable. A deliberate
+# removal from settings.json also persists (#658).
 no_hooks_marker = os.path.join(home, ".codedb", "no-hooks")
 
 def persist_no_hooks():
@@ -736,15 +842,8 @@ if not skip_pretooluse:
         f.write("")
 merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
 
-# Auto-allow codedb's own MCP tools so callers aren't prompted for every
-# codedb_* call. Purely additive — we add only the codedb-scoped rule and
-# never touch other servers' permissions. The "mcp__codedb__*" form (literal
-# server prefix + tool glob) is the syntax Claude Code's permission validator
-# accepts; a bare "mcp__*" is rejected and silently skipped.
-perms = data.setdefault("permissions", {})
-allow = perms.setdefault("allow", [])
-if isinstance(allow, list) and "mcp__codedb__*" not in allow:
-    allow.append("mcp__codedb__*")
+# Never auto-allow codedb tools (especially codedb_index). Permissions stay
+# client-prompted unless the user grants them in the client UI.
 with open(settings_path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -807,13 +906,30 @@ main() {
   local dest="$INSTALL_DIR/codedb${ext}"
 
   printf "  ${D}│${N} %-12s " "codedb"
-  local tmp
+  local tmp checksum_file sig_file
   tmp="$(mktemp "$INSTALL_DIR/.codedb-download.XXXXXX")"
-  trap 'rm -f "$tmp"' EXIT
+  checksum_file="$(mktemp "$INSTALL_DIR/.codedb-checksums.XXXXXX")"
+  sig_file="$(mktemp "$INSTALL_DIR/.codedb-checksums.XXXXXX.sig")"
+  trap 'rm -f "$tmp" "$checksum_file" "$sig_file"' EXIT
   if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
     # Keep any existing binary until the downloaded bytes are verified.
     local checksum_text expected_hash actual_hash=""
-    checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
+    if ! curl -fsSL -A 'codedb-installer' "$checksum_url" -o "$checksum_file" 2>/dev/null; then
+      printf "${R}failed${N}\n"
+      printf "\n  ${R}error: failed to download checksums.sha256. Existing binary unchanged.${N}\n" >&2
+      exit 1
+    fi
+    if ! curl -fsSL -A 'codedb-installer' "${checksum_url}.sig" -o "$sig_file" 2>/dev/null; then
+      printf "${R}failed${N}\n"
+      printf "\n  ${R}error: failed to download checksums.sha256.sig. Existing binary unchanged.${N}\n" >&2
+      exit 1
+    fi
+    if ! verify_release_signature "$checksum_file" "$sig_file"; then
+      printf "${R}failed${N}\n"
+      printf "\n  ${R}error: release signature verification failed. Existing binary unchanged.${N}\n" >&2
+      exit 1
+    fi
+    checksum_text="$(cat "$checksum_file")"
     expected_hash="$(printf '%s\n' "$checksum_text" | awk -v asset="codedb-${platform}${ext}" '$2 == asset { count++; if (NF != 2) malformed=1; hash=$1 } END { if (count == 1 && !malformed) print hash }')"
     if [[ "$expected_hash" =~ ^[0-9a-f]{64}$ ]]; then
       if command -v sha256sum >/dev/null 2>&1; then
@@ -838,9 +954,18 @@ main() {
       printf "\n  ${R}error: no unique valid checksum for this platform. Existing binary unchanged; retry when release checksums are available.${N}\n" >&2
       exit 1
     fi
-    xattr -c "$tmp" 2>/dev/null || true
+    if [ "$(uname -s 2>/dev/null)" = Darwin ] && command -v codesign >/dev/null 2>&1; then
+      if command -v file >/dev/null 2>&1 && file "$tmp" | grep -q 'Mach-O'; then
+        if ! codesign --verify --verbose=2 "$tmp" >/dev/null 2>&1; then
+          printf "${R}failed${N}\n"
+          printf "\n  ${R}error: Apple code signature missing or invalid. Existing binary unchanged.${N}\n" >&2
+          exit 1
+        fi
+      fi
+    fi
     mv -f "$tmp" "$dest"
     trap - EXIT
+    rm -f "$checksum_file" "$sig_file"
     chmod +x "$dest"
     printf "${G}✓${N}\n"
   else
@@ -852,24 +977,40 @@ main() {
 
   echo ""
   printf "  ${G}installed${N} ${D}→ $dest${N}\n"
-  printf "  ${D}claude hook opt-out: CODEDB_NO_HOOKS=1 skips this run; CODEDB_PERSIST_NO_HOOKS=1 or touch ~/.codedb/no-hooks makes it permanent (rm ~/.codedb/no-hooks re-enables)${N}\n"
+  printf "  ${D}client configs, hooks, and DeepWiki are off by default.${N}\n"
+  printf "  ${D}opt in: CODEDB_INSTALL_CLIENTS=1 CODEDB_INSTALL_HOOKS=1 CODEDB_INSTALL_DEEPWIKI=1${N}\n"
+  printf "  ${D}hooks also honor CODEDB_NO_HOOKS=1 / ~/.codedb/no-hooks${N}\n"
 
-  # Register MCP server in coding tools
+  # Register MCP server in coding tools only when explicitly opted in.
   echo ""
-  printf "  ${W}registering integrations${N}\n"
-  echo ""
-  if [ -z "${CODEDB_NO_INTEGRATIONS:-}" ]; then
-    register_claude "$dest"
-    register_codex "$dest"
-    register_codex_policy "$dest"
-    register_gemini "$dest"
-    register_cursor "$dest"
-    register_windsurf_devin "$dest"
-    register_detected_clients "$dest"
-    register_deepwiki
-    register_hooks
+  if [ -n "${CODEDB_NO_INTEGRATIONS:-}" ]; then
+    printf "  ${D}integrations skipped (CODEDB_NO_INTEGRATIONS)${N}\n"
+  elif [ "${CODEDB_INSTALL_CLIENTS:-0}" = "1" ] || [ "${CODEDB_INSTALL_HOOKS:-0}" = "1" ] || [ "${CODEDB_INSTALL_DEEPWIKI:-0}" = "1" ]; then
+    printf "  ${W}registering opted-in integrations${N}\n"
+    echo ""
+    if [ "${CODEDB_INSTALL_CLIENTS:-0}" = "1" ]; then
+      register_claude "$dest"
+      register_codex "$dest"
+      register_codex_policy "$dest"
+      register_gemini "$dest"
+      register_cursor "$dest"
+      register_windsurf_devin "$dest"
+      register_detected_clients "$dest"
+    else
+      printf "  ${D}client MCP configs skipped (set CODEDB_INSTALL_CLIENTS=1)${N}\n"
+    fi
+    if [ "${CODEDB_INSTALL_DEEPWIKI:-0}" = "1" ]; then
+      register_deepwiki
+    else
+      printf "  ${D}deepwiki skipped (set CODEDB_INSTALL_DEEPWIKI=1)${N}\n"
+    fi
+    if [ "${CODEDB_INSTALL_HOOKS:-0}" = "1" ] && [ -z "${CODEDB_NO_HOOKS:-}" ]; then
+      register_hooks
+    else
+      printf "  ${D}hooks skipped (set CODEDB_INSTALL_HOOKS=1; CODEDB_NO_HOOKS=1 always wins)${N}\n"
+    fi
   else
-    printf "  ${D}skipped (CODEDB_NO_INTEGRATIONS)${N}\n"
+    printf "  ${D}integrations skipped (opt in with CODEDB_INSTALL_CLIENTS=1 / CODEDB_INSTALL_HOOKS=1 / CODEDB_INSTALL_DEEPWIKI=1)${N}\n"
   fi
   print_hook_notes "$dest"
 

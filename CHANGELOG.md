@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Default local retrieval (`semantic=local`); `semantic=hybrid` is an explicit opt-in that leaves the machine.
+- Telemetry and auto-update are opt-in (`CODEDB_TELEMETRY=1`, `CODEDB_AUTO_UPDATE=1`). Auto-update uses the in-process signed updater and never re-runs installer side effects.
+- Releases sign `checksums.sha256` with Ed25519; installers and `codedb update` verify before replacing a binary. macOS installs verify Apple code signatures instead of stripping quarantine with `xattr -c`.
+- Installer no longer auto-writes client configs, DeepWiki, hooks, or `mcp__codedb__*` allows.
+- `codedb serve` requires a loopback token and Host allowlist; `/file/read` over HTTP is gone.
+- `queries.log` stores a SHA-256 of the query (mode 0600). `.envrc` / `.direnv/` are treated as sensitive. `codedb_index` stays in the session root unless `CODEDB_INDEX_ALLOW` lists other folders.
+
 ## 0.2.5864 - 2026-11-10
 
 - Add a Lean 4 formal verification suite (`lean-proofs/`) modeling OpenPuffer HNSW insertion/search kernels and CodeDB search/cache/ownership state machines across 373 finite state-cube checks and universal theorems (`./lean-proofs/verify.sh`).

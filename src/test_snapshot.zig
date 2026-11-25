@@ -1055,9 +1055,12 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
         "identity.PfX",                 "keystore.JKS",       "Credentials.JSON",
         "Service-Account.JSON",         "SECRETS.YAML",       "ID_RSA",
         "deep/.SSH/id_ed25519",         "x/.GnUpG/private",   "config/.AWS/credentials",
+        // secrets — direnv / envrc
+        ".envrc",                       ".EnVrC",             ".envrc.local",
+        ".direnv/cache",                "proj/.direnv/allow", ".direnvrc",
         // non-secrets — both copies must allow (esp. the .env-prefix edge cases)
-        ".envoy.json",                  ".environment",       ".envrc",
-        ".EnVoY.json",                  ".ENVIRONMENT",       ".EnVrC",
+        ".envoy.json",                  ".environment",
+        ".EnVoY.json",                  ".ENVIRONMENT",
         ".envconfig.yaml",              "main.zig",           "src/server.zig",
         "README.md",                    "package.json",       "id_rsa.pub",
         "envvars.ts",                   "Makefile",           "Dockerfile",
@@ -1081,6 +1084,8 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
     try testing.expect(!snapshot_mod.isSensitivePath(".EnVoY.json"));
     try testing.expect(!snapshot_mod.isSensitivePath(".environment"));
     try testing.expect(!snapshot_mod.isSensitivePath("main.zig"));
+    try testing.expect(snapshot_mod.isSensitivePath(".envrc"));
+    try testing.expect(snapshot_mod.isSensitivePath(".direnv/cache"));
 }
 test "issue-537b: snapshot-restored files resolve call edges (symbol_index divergence)" {
     // commitParsedFileOwnedOutline rebuilds symbol_index (explore.zig:872), but the

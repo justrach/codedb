@@ -5,6 +5,7 @@ const cio = @import("cio.zig");
 // Implements the JSON-RPC transport directly and adds roots support for workspace awareness.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const mcpj = @import("mcp_json.zig");
 pub const Root = struct {
@@ -707,16 +708,16 @@ pub const tools_list =
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Ambiguous bare names list candidates; pass from_path/to_path to select an exact project-relative file. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"from_path":{"type":"string","description":"Optional exact project-relative source file; required to disambiguate duplicate names"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"to_path":{"type":"string","description":"Optional exact project-relative target file; required to disambiguate duplicate names"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_explain","description":"One-shot neighborhood of a symbol: definition body plus every call site. Replaces codedb_symbol body=true then codedb_callers. First move when you know the name.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
-    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Local BM25/symbol retrieval always runs first. Hybrid retrieval is the default: it searches an explicitly built local OpenPuffer ANN sidecar using one transient remote request containing the task plus a fixed public calibration string; when the sidecar is absent or stale it can rerank up to 24 bounded local candidates instead. Set semantic=local for an entirely on-device call. The hosted service stores neither the repository, request body, candidate paths, nor vectors. Failure keeps the local result and never runs a CPU model.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"semantic":{"type":"string","enum":["local","hybrid"],"description":"hybrid (default) sends the task plus a fixed public calibration string when a compatible local ANN sidecar exists; otherwise it may send the task plus up to 24 locally selected relative paths with bounded snippets. local is the explicit on-device-only opt-out. Build the sidecar explicitly with codedb <root> semantic-index. The hosted lane is transient; custom endpoint retention is reported as unverified."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, retrieval privacy, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
+    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Local BM25/symbol retrieval always runs first and is the default. semantic=hybrid is an explicit opt-in that leaves the machine: it searches an explicitly built local OpenPuffer ANN sidecar using one transient remote request containing the task plus a fixed public calibration string; when the sidecar is absent or stale it can rerank up to 24 bounded local candidates instead. semantic=local keeps the call entirely on-device. The hosted service stores neither the repository, request body, candidate paths, nor vectors. Failure keeps the local result and never runs a CPU model.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"semantic":{"type":"string","enum":["local","hybrid"],"description":"local (default) stays on-device. hybrid leaves the machine: it sends the task plus a fixed public calibration string when a compatible local ANN sidecar exists; otherwise it may send the task plus up to 24 locally selected relative paths with bounded snippets. hybrid is the explicit opt-in. Build the sidecar explicitly with codedb <root> semantic-index. The hosted lane is transient; custom endpoint retention is reported as unverified."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, retrieval privacy, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set edge_type=documents for Markdown links; document traversal is capped at 2 hops and 64 nodes.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"Inbound (default) or outbound edges; for documents these mean linked-by and links-to."},"edge_type":{"type":"string","enum":["imports","documents"],"description":"Typed graph relation (default: imports)."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth (document edges are always capped at 2)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Never dump whole large files — run codedb_outline or codedb_symbol first to pick a tight range. A just-added file is indexed on miss; do not call codedb_index first. Pass if_hash to skip unchanged re-reads; compact=true for minified or long-line files.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_changes","description":"Direct way to see WHAT changed since a point in time, instead of re-scanning the tree. Files changed since a given sequence number. Pair with codedb_status (which reports the current sequence number) to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_status","description":"Index health: file count, current sequence number, scan phase. Call once to learn the seq for codedb_changes polling, or when results look stale; not needed before ordinary queries.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
-    \\{"name":"codedb_snapshot","description":"Full pre-rendered JSON of the ENTIRE index (tree, outlines, symbols, deps) — very large. For caching or shipping to edge workers, not routine exploration; use codedb_tree or codedb_outline instead.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
+    \\{"name":"codedb_snapshot","description":"Full pre-rendered JSON of the ENTIRE local index (tree, outlines, symbols, deps) — very large. For local caching and faster MCP startup only; never uploaded. Prefer codedb_tree or codedb_outline for exploration.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
     \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence. Only for multi-repo setups or debugging project= resolution — call at most once per session.","inputSchema":{"type":"object","properties":{},"required":[]},"annotations":{"readOnlyHint":true}},
-    \\{"name":"codedb_index","description":"Index a local FOLDER (not a file): rebuilds outlines, trigrams, word index, writes codedb.snapshot, and refreshes a live daemon for that project. Prefer codedb_outline/codedb_read first — a live daemon indexes a just-added file on miss. Use this to index a folder codedb has never seen, or after a mass add/delete. Query the result via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
+    \\{"name":"codedb_index","description":"Index a local FOLDER (not a file): rebuilds outlines, trigrams, word index, writes codedb.snapshot, and refreshes a live daemon for that project. Restricted to the session project root unless CODEDB_INDEX_ALLOW lists other absolute folders. Prefer codedb_outline/codedb_read first — a live daemon indexes a just-added file on miss. Use this to index a folder codedb has never seen, or after a mass add/delete. Query the result via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject. Defaults to the session root; other folders require CODEDB_INDEX_ALLOW."}},"required":["path"]}},
     \\{"name":"codedb_find","description":"Replaces find for filenames: fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_query","description":"Composable pipeline — chain find, search, filter, deps, outline, read, sort, limit in ONE request, each step feeding the next. Use for multi-step workflows that would take 2+ tool calls; for a single lookup call the direct tool instead — cheaper and sharper.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}; filter op: {\"op\":\"filter\",\"glob\":\"src/**\"} or {\"op\":\"filter\",\"ext\":\".zig\"} ('pattern' aliases 'glob'; bare patterns auto-promote to '**/<pattern>')"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_glob","description":"Replaces find for path patterns: match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]},"annotations":{"readOnlyHint":true}},
@@ -854,7 +855,7 @@ const mini_prop_descriptions = [_]PropDesc{
     .{ .name = "max_hops", .desc = "Max call hops (default: 12)" },
     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
     .{ .name = "detail", .desc = "compact (default) or full sections" },
-    .{ .name = "semantic", .desc = "hybrid (default) or local-only opt-out" },
+    .{ .name = "semantic", .desc = "local (default); hybrid leaves the machine" },
     .{ .name = "direction", .desc = "imported_by (default) or depends_on" },
     .{ .name = "transitive", .desc = "Follow the dependency chain (default: false)" },
     .{ .name = "max_depth", .desc = "Depth cap for transitive (default: unlimited)" },
@@ -866,7 +867,7 @@ const mini_prop_descriptions = [_]PropDesc{
 /// JSON is shared with the core/full profiles, so it is left untouched and
 /// these are swapped in only on the mini path (mirrors slim_descriptions).
 const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
-    .{ .name = "codedb_context", .desc = "Task neighborhood in one call. Hybrid retrieval is default; semantic=local explicitly opts out. max_tokens caps output." },
+    .{ .name = "codedb_context", .desc = "Task neighborhood in one call. Local retrieval is default; semantic=hybrid leaves the machine. max_tokens caps output." },
     .{ .name = "codedb_explain", .desc = "Symbol neighborhood in one call: definition body plus every call site. First move when you know the name. Replaces symbol --body then callers." },
     .{ .name = "codedb_callpath", .desc = "Shortest resolved call chain A→…→B. First move when you need how execution reaches a callee. Returns each hop as path:name@line." },
     .{ .name = "codedb_list_dir", .desc = "Live folder listing (gitignore, 10k cap). Use instead of bash ls/find/tree; works on unindexed trees. codedb_ls is the indexed one-level listing." },
@@ -3997,7 +3998,11 @@ fn handleContext(
 
     const max_tokens: ?u32 = if (getInt(args, "max_tokens")) |n| @intCast(@max(256, @min(n, 1_000_000))) else null;
     const document_hops: u32 = if (getInt(args, "document_hops")) |n| @intCast(@max(0, @min(n, 2))) else 0;
-    const semantic_mode = getStr(args, "semantic") orelse "hybrid";
+    if (getStr(args, "embeddings_url") != null or getStr(args, "CODEDB_EMBEDDINGS_URL") != null) {
+        out.appendSlice(alloc, "error: embeddings URL cannot be set via MCP arguments; use the CODEDB_EMBEDDINGS_URL process environment") catch {};
+        return;
+    }
+    const semantic_mode = getStr(args, "semantic") orelse "local";
     if (!std.mem.eql(u8, semantic_mode, "local") and !std.mem.eql(u8, semantic_mode, "hybrid")) {
         out.appendSlice(alloc, "error: semantic must be 'local' or 'hybrid'") catch {};
         return;
@@ -4659,7 +4664,7 @@ fn handleContext(
         wh.print("# Task\n{s}\n\n## Keywords used\n", .{task}) catch {};
         for (candidates.items) |k| wh.print("- {s}\n", .{k}) catch {};
         if (semantic_requested) {
-            wh.print("\n## Retrieval privacy\n- local BM25/symbol retrieval ran first\n", .{}) catch {};
+            wh.print("\n## Retrieval privacy\n- semantic=hybrid leaves the machine\n- local BM25/symbol retrieval ran first\n", .{}) catch {};
             if (std.mem.eql(u8, retrieval.semantic, "ann_applied")) {
                 wh.print("- local OpenPuffer ANN: {d}D, vector space {x}, {d} indexed code chunks / {d} sidecar bytes\n- remote query embedding: task plus fixed public vector-space calibration / {d} text bytes; remote retention: {s}\n- local vector storage: {s}; mmap={any}; cache_hit={any}; ANN load {d} ns / search {d} ns\n", .{
                     retrieval.dimensions orelse semantic_mod.default_dimensions,
@@ -5979,6 +5984,9 @@ fn handleIndex(
         return;
     };
 
+    const session_root = cache.default_path;
+    const allow_list = cio.posixGetenv("CODEDB_INDEX_ALLOW") orelse "";
+
     // Build through one pinned Explorer capability. The old implementation
     // resolved + check-opened this path, closed the handle, then spawned a
     // child that reopened the mutable pathname. A rename/symlink swap in that
@@ -5997,6 +6005,11 @@ fn handleIndex(
         return;
     };
     defer alloc.free(abs_path);
+    if (!root_policy.indexPathAllowed(session_root, abs_path, allow_list)) {
+        out.appendSlice(alloc, "error: codedb_index is limited to the session root; set CODEDB_INDEX_ALLOW to a colon-separated list of absolute folders to index others: ") catch {};
+        out.appendSlice(alloc, abs_path) catch {};
+        return;
+    }
     const data_dir = bootstrap_mod.getDataDir(io, alloc, abs_path) catch {
         out.appendSlice(alloc, "error: cannot create project data directory") catch {};
         return;
@@ -6382,7 +6395,7 @@ pub fn runCliTool(
             if (task.items.len > 0) task.append(alloc, ' ') catch {};
             task.appendSlice(alloc, args[i]) catch {};
         }
-        if (task.items.len == 0) return cliUsage(alloc, out, "context [--local] [--json] <task...>");
+        if (task.items.len == 0) return cliUsage(alloc, out, "context [--hybrid] [--json] <task...>");
         m.put(alloc, "task", .{ .string = task.items }) catch return 1;
         loadProjectWordIndexFromDiskIfPresent(io, explorer, root, alloc);
         handleContext(io, alloc, &m, out, store, explorer, null);
@@ -7097,24 +7110,43 @@ fn escapeJsonStr(input: []const u8, out: *[256]u8) usize {
     return elen;
 }
 
+fn restrictQueryLogMode(io: std.Io, file: std.Io.File) void {
+    if (builtin.os.tag == .windows) return;
+    file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600)) catch {};
+}
+
 fn appendToWal(io: std.Io, line: []const u8) void {
     const path = query_log_path orelse return;
     const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only }) catch blk: {
-        break :blk std.Io.Dir.cwd().createFile(io, path, .{}) catch return;
+        const created = std.Io.Dir.cwd().createFile(io, path, .{
+            .permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600),
+        }) catch return;
+        restrictQueryLogMode(io, created);
+        break :blk created;
     };
     defer file.close(io);
+    restrictQueryLogMode(io, file);
     const end_offset = file.length(io) catch return;
     file.writePositionalAll(io, line, end_offset) catch {};
 }
 
-fn logQuery(io: std.Io, tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128) void {
-    var escaped: [256]u8 = undefined;
-    const elen = escapeJsonStr(query, &escaped);
+pub fn hashQueryHex(query: []const u8) [64]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(query, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+pub fn formatQueryLogLine(buf: []u8, tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128, ts_ms: i64) ?[]const u8 {
+    const digest_hex = hashQueryHex(query);
     const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
+    return std.fmt.bufPrint(buf, "{{\"ts\":{d},\"ev\":\"query\",\"tool\":\"{s}\",\"query_sha256\":\"{s}\",\"result_bytes\":{d},\"latency_us\":{d}}}\n", .{
+        ts_ms, tool, digest_hex, result_bytes, latency_us,
+    }) catch null;
+}
+
+fn logQuery(io: std.Io, tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128) void {
     var buf: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"query\",\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d},\"latency_us\":{d}}}\n", .{
-        cio.milliTimestamp(), tool, escaped[0..elen], result_bytes, latency_us,
-    }) catch return;
+    const line = formatQueryLogLine(&buf, tool, query, result_bytes, latency_ns, cio.milliTimestamp()) orelse return;
     appendToWal(io, line);
 }
 

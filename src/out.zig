@@ -110,7 +110,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
     });
     out.p(
         \\    {s}file{s}  <fuzzy-name>        fuzzy file-name search
-        \\    {s}context{s}  [--local] <task...>  hybrid task-shaped orientation bundle
+        \\    {s}context{s}  [--hybrid] <task...>  local task-shaped orientation bundle (hybrid leaves the machine)
         \\    {s}explain{s}  <name>           definition body + callers (alias: around)
         \\    {s}callpath{s} <from> <to>      shortest resolved call chain (alias: path)
         \\    {s}reindex{s}                   force a fresh filesystem scan and rebuild all indexes
@@ -136,7 +136,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
     });
     out.p(
         \\  {s}options:{s}
-        \\    {s}--no-telemetry{s}             disable usage telemetry (or set CODEDB_NO_TELEMETRY)
+        \\    {s}--no-telemetry{s}             disable usage telemetry (off by default; opt in with CODEDB_TELEMETRY=1)
         \\    {s}--config-file <path>{s}       load config overrides from <path> (default: ./.codedbrc)
         \\
         \\  If root is omitted, uses current working directory.

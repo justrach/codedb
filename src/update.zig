@@ -3,6 +3,7 @@ const cio = @import("cio.zig");
 const builtin = @import("builtin");
 const sty = @import("style.zig");
 const release_info = @import("release_info.zig");
+const release_sign = @import("release_sign.zig");
 
 const github_repo = "justrach/codedb";
 const default_base_url = "https://codedb.codegraff.com";
@@ -90,6 +91,16 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
         std.process.exit(1);
     };
     defer allocator.free(manifest);
+
+    const signature = fetchChecksumsSignature(allocator, resolved.value) catch |err| {
+        out.p("{s}✗{s} failed to download checksum signature for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(signature);
+    if (!release_sign.verifyManifest(manifest, signature)) {
+        out.p("{s}✗{s} release v{s} checksum signature is missing or invalid\n", .{ s.red, s.reset, resolved.value });
+        std.process.exit(1);
+    }
 
     const expected_hash = checksumForBinary(manifest, asset_name) orelse {
         out.p("{s}✗{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
@@ -234,6 +245,12 @@ fn fetchChecksumsManifest(allocator: std.mem.Allocator, version: []const u8) ![]
     return fetchUrlToMemory(allocator, url, 256 * 1024);
 }
 
+fn fetchChecksumsSignature(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
+    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/checksums.sha256.sig", .{ github_repo, version });
+    defer allocator.free(url);
+    return fetchUrlToMemory(allocator, url, 1024);
+}
+
 fn fetchUrlToMemory(allocator: std.mem.Allocator, url: []const u8, max_output_bytes: usize) ![]u8 {
     const result = try cio.runCapture(.{
         .allocator = allocator,
@@ -357,9 +374,11 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
 
 // ── Auto-update ──────────────────────────────────────────────────────────────
 //
-// On startup we kick off a detached check that shells out to the public
-// install.sh. The check is:
-//   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+// Opt-in (CODEDB_AUTO_UPDATE=1) in-process self-update. Never re-runs the
+// installer, so client configs, hooks, and DeepWiki registrations are not
+// rewritten. The check is:
+//   • off by default
+//   • disabled when CODEDB_NO_AUTO_UPDATE is set
 //   • throttled to at most once every 24 hours, tracked in
 //     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
 // The update itself runs in a background thread so it never blocks server
@@ -367,14 +386,22 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
 // the old inode mapped for the running process; subsequent invocations get the
 // new binary.
 
-const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
 const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
 const auto_update_stamp_filename = "last_auto_update_check";
 
+pub fn autoUpdateEnvEnabled(auto_update: ?[]const u8, no_auto_update: bool) bool {
+    if (no_auto_update) return false;
+    const v = auto_update orelse return false;
+    return std.mem.eql(u8, v, "1") or
+        std.mem.eql(u8, v, "true") or
+        std.mem.eql(u8, v, "yes") or
+        std.mem.eql(u8, v, "on");
+}
+
 /// Pure decision function — useful for tests. Returns true when the next
 /// auto-update attempt should fire.
-pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
-    if (env_disabled) return false;
+pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool, env_enabled: bool) bool {
+    if (env_disabled or !env_enabled) return false;
     const last = last_check_ms orelse return true;
     if (last > now_ms) return true;
     const delta: i128 = @as(i128, now_ms) - @as(i128, last);
@@ -383,6 +410,7 @@ pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool)
 
 pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
     const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+    const env_enabled = autoUpdateEnvEnabled(cio.posixGetenv("CODEDB_AUTO_UPDATE"), env_disabled);
     const home = cio.homeDir() orelse return;
     if (home.len == 0) return;
 
@@ -395,27 +423,37 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
 
     const last_ms = readAutoUpdateStamp(io, stamp_path);
     const now_ms = cio.milliTimestamp();
-    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled, env_enabled)) return;
 
     // Persist the new timestamp before launching so concurrent invocations
     // don't all race the same check.
     writeAutoUpdateStamp(io, stamp_path, now_ms);
 
-    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{}) catch return;
+    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{io}) catch return;
     thread.detach();
 }
 
-fn autoUpdateWorker() void {
-    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
-    // and immediately discard so the install script's progress output doesn't
-    // leak into the parent's stdio (which is the MCP transport).
-    const result = cio.runCapture(.{
-        .allocator = std.heap.page_allocator,
-        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
-        .max_output_bytes = 64 * 1024,
-    }) catch return;
-    std.heap.page_allocator.free(result.stdout);
-    std.heap.page_allocator.free(result.stderr);
+fn autoUpdateWorker(io: std.Io) void {
+    silentSelfUpdate(io, std.heap.page_allocator) catch {};
+}
+
+fn silentSelfUpdate(io: std.Io, allocator: std.mem.Allocator) !void {
+    const resolved = try resolveTargetVersion(allocator);
+    defer allocator.free(resolved.value);
+    const version_order = try compareVersionsForUpdate(release_info.semver, resolved.value);
+    if (version_order != .lt) return;
+
+    const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse return error.UnsupportedPlatform;
+    const manifest = try fetchChecksumsManifest(allocator, resolved.value);
+    defer allocator.free(manifest);
+    const signature = try fetchChecksumsSignature(allocator, resolved.value);
+    defer allocator.free(signature);
+    if (!release_sign.verifyManifest(manifest, signature)) return error.InvalidReleaseSignature;
+
+    const expected_hash = checksumForBinary(manifest, asset_name) orelse return error.MissingChecksum;
+    const self_path = try std.process.executablePathAlloc(io, allocator);
+    defer allocator.free(self_path);
+    try downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash);
 }
 
 fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {

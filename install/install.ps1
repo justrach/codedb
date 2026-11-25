@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $repo = "justrach/codedb"
 $assetName = "codedb-windows-x86_64.exe"
+$releasePublicKey = if ($env:CODEDB_RELEASE_PUBKEY) { $env:CODEDB_RELEASE_PUBKEY } else { "1aaec9bc8ba799a3dc0129e3fde949567bc8493b9534aa60f0bf1a32cc921f20" }
 $baseUrl = if ($env:CODEDB_URL) { $env:CODEDB_URL.TrimEnd("/") } else { "https://codedb.codegraff.com" }
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -82,6 +83,78 @@ try {
     -Headers @{ "User-Agent" = "codedb-installer" } `
     "$releaseUrl/checksums.sha256" `
     -OutFile $downloadedChecksums
+  $downloadedChecksumsSig = Join-Path $downloadDir "checksums.sha256.sig"
+  Invoke-WebRequest -UseBasicParsing `
+    -Headers @{ "User-Agent" = "codedb-installer" } `
+    "$releaseUrl/checksums.sha256.sig" `
+    -OutFile $downloadedChecksumsSig
+
+  $python = Get-Command python3 -ErrorAction SilentlyContinue
+  if (-not $python) { $python = Get-Command python -ErrorAction SilentlyContinue }
+  if (-not $python) {
+    throw "python3 is required to verify the Ed25519 release signature"
+  }
+  $verifyScript = Join-Path $PSScriptRoot "..\scripts\ed25519_pure.py"
+  if (-not (Test-Path -LiteralPath $verifyScript)) {
+    $verifyScript = Join-Path $PSScriptRoot "ed25519_pure.py"
+  }
+  if (Test-Path -LiteralPath $verifyScript) {
+    & $python.Source $verifyScript verify $releasePublicKey $downloadedChecksums $downloadedChecksumsSig
+    if ($LASTEXITCODE -ne 0) {
+      throw "Release signature verification failed"
+    }
+  } else {
+    $inline = @'
+import hashlib, sys
+b=256; q=2**255-19; l=2**252+27742317777372353535851937790883648493
+def inv(x): return pow(x,q-2,q)
+d=-121665*inv(121666)%q; I=pow(2,(q-1)//4,q)
+def xrecover(y):
+    xx=(y*y-1)*inv(d*y*y+1); x=pow(xx,(q+3)//8,q)
+    if (x*x-xx)%q!=0: x=(x*I)%q
+    if x%2: x=q-x
+    return x
+By=4*inv(5); Bx=xrecover(By); B=(Bx%q,By%q,1,(Bx*By)%q)
+def add(p1,p2):
+    x1,y1,z1,t1=p1; x2,y2,z2,t2=p2
+    a=(y1-x1)*(y2-x2)%q; bb=(y1+x1)*(y2+x2)%q; c=t1*2*d*t2%q; dd=z1*2*z2%q
+    e,f,g,h=bb-a,dd-c,dd+c,bb+a
+    return (e*f%q,g*h%q,f*g%q,e*h%q)
+def smul(p1,s):
+    q1=(0,1,1,0)
+    while s:
+        if s&1: q1=add(q1,p1)
+        p1=add(p1,p1); s>>=1
+    return q1
+def enc(p1):
+    x,y,z,_=p1; zi=inv(z); x,y=(x*zi)%q,(y*zi)%q
+    bits=bytearray(y.to_bytes(32,"little")); bits[31]^=(x&1)<<7; return bytes(bits)
+def oncurve(p1):
+    x,y,z,t=p1
+    return z%q!=0 and (x*y-z*t)%q==0 and (y*y-x*x-z*z-d*t*t)%q==0
+def dec(s):
+    y=int.from_bytes(s,"little")&((1<<255)-1); x=xrecover(y)
+    if (x&1)!=(s[31]>>7): x=q-x
+    p1=(x,y,1,x*y%q)
+    if not oncurve(p1): raise ValueError("invalid point")
+    return p1
+pk=bytes.fromhex(sys.argv[1]); msg=open(sys.argv[2],"rb").read(); sig=open(sys.argv[3],"rb").read()
+if len(sig)==128:
+    sig=bytes.fromhex(sig.decode().strip())
+if len(sig)!=64 or len(pk)!=32: sys.exit(1)
+r=dec(sig[:32]); a=dec(pk); s=int.from_bytes(sig[32:],"little")
+if s>=l: sys.exit(1)
+h=int.from_bytes(hashlib.sha512(sig[:32]+pk+msg).digest(),"little")
+sys.exit(0 if enc(smul(B,s))==enc(add(smul(a,h),r)) else 1)
+'@
+    $inlinePath = Join-Path $downloadDir "verify.py"
+    Set-Content -LiteralPath $inlinePath -Value $inline -Encoding ascii
+    & $python.Source $inlinePath $releasePublicKey $downloadedChecksums $downloadedChecksumsSig
+    if ($LASTEXITCODE -ne 0) {
+      throw "Release signature verification failed"
+    }
+  }
+  Write-Host "  verify    Ed25519 signature OK"
 
   $checksumLine = Get-Content -LiteralPath $downloadedChecksums |
     Where-Object { $_ -match "\s\*?$([regex]::Escape($assetName))$" } |

@@ -51,9 +51,9 @@ Graff, Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Devin, oh-my-pi, Hermes
 | “How does this request reach the database?” | Trace a chain between symbols with `codedb_callpath` |
 | “What's in this part of the repo?” | Browse with `codedb_list_dir` and inspect file outlines |
 
-Structural search runs locally. **Default hybrid retrieval also uses hosted
-embeddings**; choose `semantic=local` for local-only retrieval. See
-[Data & Privacy](#-data--privacy) for what each mode sends and stores.
+Structural search runs locally. **Retrieval defaults to `semantic=local`**.
+Hybrid retrieval (`semantic=hybrid`) is an explicit opt-in that leaves the
+machine. See [Data & Privacy](#-data--privacy) for what each mode sends and stores.
 
 ## ⚡ Install
 
@@ -63,7 +63,7 @@ embeddings**; choose `semantic=local` for local-only retrieval. See
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
-Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, **Devin**, **oh-my-pi**, **Hermes**, **Qwen Code**, **ZCode**, **Trae**, **Cline**, **Copilot CLI**, **Antigravity**, **Kiro**, and **OpenCode** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
+Downloads the signed binary for your platform. Client MCP configs, Claude/Codex hooks, and DeepWiki are **off by default**. Opt in with `CODEDB_INSTALL_CLIENTS=1`, `CODEDB_INSTALL_HOOKS=1`, and/or `CODEDB_INSTALL_DEEPWIKI=1`. The installer will not create `~/.claude.json` unless Claude is already installed, and it never grants a blanket `mcp__codedb__*` allow. The installer prints the `codedb mcp` command to add yourself.
 
 On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
 
@@ -90,7 +90,7 @@ npm install -g codedeebee
 codedb mcp
 ```
 
-The npm package is named [`codedeebee`](https://www.npmjs.com/package/codedeebee) (the bare `codedb` name is restricted on npm); it ships a thin launcher that downloads the matching native binary from GitHub Releases on `postinstall` and verifies the SHA256 checksum. The installed CLI is still called `codedb`.
+The npm package is named [`codedeebee`](https://www.npmjs.com/package/codedeebee) (the bare `codedb` name is restricted on npm); it ships a thin launcher that downloads the matching native binary from GitHub Releases on `postinstall` and verifies the Ed25519-signed SHA-256 checksums. The installed CLI is still called `codedb`.
 
 The launcher already knows how to fetch `codedb-windows-x86_64.exe`, but the currently published `codedeebee` predates that release asset, so `npx -y codedeebee mcp` does not work on Windows yet — it becomes available with the next published release. Use the PowerShell installer above until then.
 
@@ -227,7 +227,7 @@ Tools over the Model Context Protocol (JSON-RPC 2.0 over stdio). Agents see five
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
 | `codedb_explain` | Definition body + callers in one call (CLI aliases: `explain`, `around`) |
 | `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`); duplicate names list candidates—pass `from_path` / `to_path` (or CLI `--from-path` / `--to-path`) to select a file |
-| `codedb_context` | Task-shaped composer — Pareto-frontier hybrid retrieval by default: local BM25/symbol retrieval first, then local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient semantic rerank otherwise. Pass `semantic=local` for an on-device-only call. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
+| `codedb_context` | Task-shaped composer — local BM25/symbol retrieval by default. Pass `semantic=hybrid` to opt in to a hosted embedding request that leaves the machine (task + calibration, or a bounded exact rerank). `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Typed dependency graph: imports by default, or Markdown links with `edge_type=documents`; document traversal is capped at 2 hops / 64 files |
 | `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
@@ -261,12 +261,13 @@ env var is set.
 ### Public repos — DeepWiki (remote MCP)
 
 codedb indexes *your* checked-out code. For
-questions about *public* GitHub repos, the installer registers
-[DeepWiki](https://deepwiki.com) (`https://mcp.deepwiki.com/mcp` — free, no
-auth) as a separate remote MCP server in each detected client, with tools
-`read_wiki_structure`, `read_wiki_contents`, and `ask_question`. Opt out at
-install time with `CODEDB_INSTALL_DEEPWIKI=0`. (The old `codedb_remote` tool
-backed by api.wiki.codes was removed; DeepWiki replaces that role.)
+questions about *public* GitHub repos, opt in at install time with
+`CODEDB_INSTALL_DEEPWIKI=1` to register [DeepWiki](https://deepwiki.com)
+(`https://mcp.deepwiki.com/mcp` — free, no auth) as a separate remote MCP
+server in each detected client, with tools `read_wiki_structure`,
+`read_wiki_contents`, and `ask_question`. DeepWiki queries leave the machine.
+(The old `codedb_remote` tool backed by api.wiki.codes was removed; DeepWiki
+replaces that role.)
 
 ### CLI Commands
 
@@ -282,40 +283,44 @@ backed by api.wiki.codes was removed; DeepWiki replaces that role.)
 | `codedb hot` | Recently modified files |
 | `codedb reindex` | Force a fresh filesystem scan, rebuild all local indexes, and refresh the live daemon |
 | `codedb snapshot` | Write codedb.snapshot to project root |
-| `codedb serve` | HTTP daemon on :7719 |
+| `codedb serve` | Loopback HTTP daemon on :6767 (token + Host allowlist required) |
 | `codedb mcp [path]` | JSON-RPC/MCP server over stdio |
 | `codedb update` | Self-update to the latest release; older builds can be repaired with the installer |
 | `codedb nuke` | Uninstall codedb, remove caches/snapshots, and deregister MCP integrations |
 | `codedb --version` | Print version |
 
-**Options:** `--no-telemetry` (or set `CODEDB_NO_TELEMETRY` env var)
+**Options:** `--no-telemetry` (telemetry is off by default; set `CODEDB_TELEMETRY=1` to opt in)
 
-**Claude Code hook opt-out:** the installer registers a PreToolUse hook that nudges agents from `grep`/`cat` to codedb inside indexed repos. `CODEDB_NO_HOOKS=1` skips it for that run only (it is never persisted from the environment, so a transient export can't be promoted to a permanent opt-out by the background auto-updater). To make it permanent, run the installer with `CODEDB_PERSIST_NO_HOOKS=1` or `touch ~/.codedb/no-hooks`; `rm ~/.codedb/no-hooks` re-enables it. Deleting the hook entry from `~/.claude/settings.json` is also permanent — the installer records its registrations and treats a missing entry as a deliberate removal (it writes `~/.codedb/no-hooks` for you, so `rm` that file to undo).
+**Claude Code hooks:** off unless you pass `CODEDB_INSTALL_HOOKS=1`. `CODEDB_NO_HOOKS=1` skips them even then. Client MCP configs and DeepWiki are also opt-in (`CODEDB_INSTALL_CLIENTS=1`, `CODEDB_INSTALL_DEEPWIKI=1`). The installer will not create `~/.claude.json` unless Claude is already installed.
 
 ### Example: agent explores a codebase
 
 ```bash
+# codedb serve prints a loopback token. Export it, then:
+export CODEDB_SERVE_TOKEN=...   # or pass -H "Authorization: Bearer ..."
+
 # 1. Get the file tree
-curl localhost:7719/tree
+curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
+  http://127.0.0.1:6767/explore/tree
 # → src/main.zig      (zig, 55L, 4 symbols)
 #   src/store.zig     (zig, 156L, 12 symbols)
 #   src/agent.zig     (zig, 135L, 8 symbols)
 
 # 2. Drill into a file
-curl "localhost:7719/outline?path=src/store.zig"
-# → L20: struct_def Store
-#   L30: function init
-#   L55: function recordSnapshot
+curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
+  "http://127.0.0.1:6767/explore/outline?path=src/store.zig"
 
 # 3. Find a symbol across the codebase
-curl "localhost:7719/symbol?name=AgentRegistry"
-# → {"path":"src/agent.zig","line":30,"kind":"struct_def"}
+curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
+  "http://127.0.0.1:6767/explore/symbol?name=AgentRegistry"
 
 # 4. Full-text search
-curl "localhost:7719/search?q=handleAuth&max=10"
+curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
+  "http://127.0.0.1:6767/explore/search?q=handleAuth"
 
 # 5. Check what changed
-curl "localhost:7719/changes?since=42"
+curl -H "Host: 127.0.0.1" -H "Authorization: Bearer $CODEDB_SERVE_TOKEN" \
+  "http://127.0.0.1:6767/changes?since=42"
 ```
 
 ---
@@ -471,12 +476,17 @@ All threads share a `shutdown: atomic.Value(bool)` for graceful termination.
 
 ## 🔒 Data & Privacy
 
-codedb collects anonymous usage telemetry to improve the tool. Telemetry is **on by default** — written to `~/.codedb/telemetry.ndjson` and periodically synced to the codedb analytics endpoint. **No source code, file contents, file paths, or search queries are collected** — only aggregate tool call counts, latency, and startup stats.
+codedb collects anonymous usage telemetry only if you opt in with
+`CODEDB_TELEMETRY=1`. When enabled it is written to `~/.codedb/telemetry.ndjson`
+and periodically synced to the codedb analytics endpoint. **No source code, file
+contents, file paths, or search queries are collected** — only aggregate tool
+call counts, latency, and startup stats. `CODEDB_NO_TELEMETRY=1` and
+`--no-telemetry` force it off.
 
-`codedb_context` uses Pareto-frontier hybrid retrieval by default. Local BM25,
-trigram, symbol, and graph retrieval always runs first. Pass `semantic=local`
-for an entirely on-device call that sends no query or source text to an
-embedding service. In the default hybrid mode:
+`codedb_context` uses local BM25, trigram, symbol, and graph retrieval by
+default (`semantic=local`). That call sends no query or source text to an
+embedding service. `semantic=hybrid` is an explicit opt-in that **leaves the
+machine**. In hybrid mode:
 
 - local BM25/symbol retrieval still runs first and remains the failure-safe
   result;
@@ -549,8 +559,8 @@ another operator's storage policy.
 | `~/.codedb/telemetry.ndjson` | Aggregate tool calls and startup stats | Local telemetry log |
 | `./codedb.snapshot` | File tree, outlines, content, frequency table | Portable snapshot for instant MCP startup |
 
-**Not stored:** In explicit `semantic=local` mode, no source code is sent
-anywhere. In the default hybrid and explicit index-build modes, only the
+**Not stored:** In default `semantic=local` mode, no source code is sent
+anywhere. In explicit `semantic=hybrid` and explicit index-build modes, only the
 bounded transient batches above leave the machine; the hosted service does not
 store them and never creates a
 repository index. The optional ANN vectors and graph remain in the local codedb
@@ -574,7 +584,9 @@ CODEDB_EMBEDDINGS_TIMEOUT_MS=15000
 CODEDB_SEMANTIC_INDEX_CONCURRENCY=4
 ```
 
-To disable telemetry: set `CODEDB_NO_TELEMETRY=1` or pass `--no-telemetry`.
+To enable telemetry: set `CODEDB_TELEMETRY=1`. To force it off: `CODEDB_NO_TELEMETRY=1` or `--no-telemetry`.
+
+Release binaries are SHA-256 checksummed and Ed25519-signed. See [`docs/release-signing.md`](./docs/release-signing.md). Auto-update is off unless `CODEDB_AUTO_UPDATE=1`; `codedb update` verifies the signature in-process and never re-runs installer side effects.
 
 To sync the local NDJSON file into Postgres for analysis or dashboards, use [`scripts/sync-telemetry.py`](./scripts/sync-telemetry.py) with the schema in [`docs/telemetry/postgres-schema.sql`](./docs/telemetry/postgres-schema.sql). The data flow is documented in [`docs/telemetry.md`](./docs/telemetry.md).
 
